@@ -22,9 +22,9 @@ class MolDataset(Dataset):
         name: Literal['qm9'],
         root: str='dataset',
         feature_names: List[str]=None,
-        processed_path: str='',
+        processed_name: str='',
         force_reload: bool=False,
-        remove_hydrogens: bool=True,
+        remove_hydrogens: bool=False,
         add_smiles: bool=True,
         n_samples: int=-1,
         add_xmask: bool=False
@@ -34,6 +34,7 @@ class MolDataset(Dataset):
         self.name = name
         self.feature_names = feature_names
         
+        processed_path = osp.join(root, name, processed_name)
         if osp.exists(processed_path) and not force_reload:
             data = torch.load(processed_path)
             self.data_list = data['data_list']

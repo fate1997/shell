@@ -20,17 +20,18 @@ class PolyNoiser(Noiser):
         x = np.linspace(0, steps, steps)
         alphas2 = (1 - np.power(x / steps, power))**2
         alphas2 = clip_noise_schedule(alphas2, clip_value=0.001)
-        precision = 1 - 2 * precision
-        alphas2 = precision * alphas2 + precision
-
+        k = 1 - 2 * precision
+        alphas2 = k * alphas2 + precision
         sigmas2 = 1 - alphas2
-
+        
         gamma = self._calc_gamma(
             torch.from_numpy(alphas2).float(),
             torch.from_numpy(sigmas2).float()
         )
 
         self.gamma = torch.nn.Parameter(gamma, requires_grad=False)
+        self.alpha = torch.nn.Parameter(torch.sqrt(torch.sigmoid(-gamma)), requires_grad=False)
+        self.sigma = torch.nn.Parameter(torch.sqrt(torch.sigmoid(gamma)), requires_grad=False)
 
     def forward(self, t: torch.Tensor) -> NoiserOutput:
         t_int = torch.round(t * self.timesteps).long()

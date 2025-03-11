@@ -1,6 +1,9 @@
 from typing import List
 
 
-QM9_SHELL_RADIUS: List[int] = [
-    0.0, 1.24, 1.61, 1.88, 2.11, 2.30, 2.49, 2.69, 2.92, 3.27, 8.0
-]
+QM9_SHELL_RADIUS: List[int] = [0.0, 1.61, 2.1, 2.49, 2.92, 9.0]
+
+COLOR_CONTRAST = ['#3D8D7A', '#854836']
+
+DEFAULT_SIGMA_MIN = 0.001
+DEFAULT_POLY_PRECISION = 1e-5

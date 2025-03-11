@@ -1,0 +1,64 @@
+train:
+  task_name: 'debug'
+  batch_size: 32
+  n_epochs: 1000
+  n_train: 100000
+  n_val: 10000
+  weight_decay: 1.e-12
+  report_interval: 100
+  save_interval: 1000
+  num_workers: 16
+  trainer_args:
+    accelerator: gpu
+    accumulate_grad_batches: 1
+    devices: 1
+    gradient_clip_algorithm: value
+    gradient_clip_val: 1.0
+    limit_val_batches: 0.1
+    max_epochs: 1000
+    num_nodes: 1
+    strategy: auto
+
+lr_scheduler:
+  base_lr: 0.00025
+  restart_interval: 0
+  restart_type: linear
+  warmup_length: 0.0
+  weight_decay: 1.0e-12
+
+sample:
+  unique_atom_nums: [1, 6, 7, 8, 9]
+  timesteps: 1000
+  annealing_rate: 0.5
+
+dataset:
+  name: 'qm9'
+  feature_names: ['x', 'pos', 'z', 'radius']
+  remove_hydrogens: false
+  n_samples: -1
+  processed_name: 'qm9.pt'
+  force_reload: false
+  add_xmask: true
+
+denoiser:
+  in_node_nf: 6
+  hidden_nf: 256
+  n_layers: 6
+  attention: true
+  inv_sublayers: 1
+  norm_constant: 1
+  context_node_nf: 0
+
+wandb:
+  entity: rengp97
+  id: rengp97
+  mode: online
+  name: name
+  project: shell
+  save_dir: save_dir
+
+checkpointing:
+  every_n_epochs: 1
+  monitor: val_total_loss
+  save_last: true
+  save_top_k: 3

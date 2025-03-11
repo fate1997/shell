@@ -18,6 +18,7 @@ class Mol(Data):
         z: Optional[torch.Tensor] = None,
         id: Optional[torch.Tensor] = None,
         shell_id: Optional[torch.Tensor] = None,
+        radius: Optional[torch.Tensor] = None,
         **kwargs
     ):
         super(Mol, self).__init__(x, edge_index, edge_attr, y, pos, **kwargs)
@@ -26,9 +27,34 @@ class Mol(Data):
         self.smiles = smiles
         self.name = name
         self.z = z
-        self.y = y.unsqueeze(0)
+        self.y = y
         self.id = id
         self.shell_id = shell_id
+        self.radius = radius
+    
+    def get_submol(
+        self,
+        mask: torch.Tensor,
+    ) -> 'Mol':
+        assert self.edge_index is None
+        mol = Mol(
+            x=self.x[mask],
+            y=self.y,
+            pos=self.pos[mask],
+            desc=None if getattr(self, 'desc', None) is None else self.desc[mask],
+            smiles=None if getattr(self, 'smiles', None) is None else self.smiles,
+            name=None if getattr(self, 'name', None) is None else self.name,
+            z=self.z[mask],
+            id=None if getattr(self, 'id', None) is None else self.id,
+            shell_id=self.shell_id[mask],
+            radius=self.radius[mask]
+        )
+        if getattr(self, 'batch', None) is not None:
+            batch = self.batch[mask]
+            # Ensure that the batch is contiguous
+            batch = torch.unique(batch, return_inverse=True)[1]
+            mol.batch = batch
+        return mol    
     
     def _get_atom_num(
         self, 

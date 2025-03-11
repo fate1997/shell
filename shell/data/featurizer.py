@@ -8,7 +8,7 @@ from scipy.sparse import coo_matrix
 
 from shell.utils.constants import DEGREE_CHOICE
 from shell.utils.settings import QM9_SHELL_RADIUS
-from shell.utils.shell import assign_shell_id
+from shell.utils.geometry import assign_shell_id
 
 FEATURIZER_REGISTRY: Dict[str, 'Featurizer'] = {}
 
@@ -153,7 +153,7 @@ class AtomNumFeaturizer(Featurizer):
         return {'z': torch.tensor(atom_nums)}
 
 
-@register_cls('shell_id')
+@register_cls('radius')
 class ShellIdFeaturizer(Featurizer):
     def __call__(
         self,
@@ -164,8 +164,8 @@ class ShellIdFeaturizer(Featurizer):
         pos -= pos.mean(dim=0)
         distance = torch.norm(pos, dim=1)
         shell_id = assign_shell_id(distance, torch.tensor(QM9_SHELL_RADIUS))
-        return {'shell_id': shell_id}
-
+        return {'shell_id': shell_id, 'radius': distance}
+    
 
 ########################################################
 ############# End of new featurizers ###################
