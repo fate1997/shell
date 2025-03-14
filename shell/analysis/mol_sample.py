@@ -120,7 +120,6 @@ class MolSampleList:
         lst = []
         for i in range(batch.max() + 1):
             mask = batch == i
-            print(mask, pos_traj[0].shape)
             if pos_traj is not None and atom_traj is not None:
                 pos_traj_i = [traj[mask] for traj in pos_traj]
                 atom_traj_i = [traj[mask] for traj in atom_traj]

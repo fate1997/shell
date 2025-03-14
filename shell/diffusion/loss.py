@@ -32,7 +32,7 @@ class EDMPredictionOutput:
     x_zt: torch.Tensor
     p_zt: torch.Tensor
     
-    line_noiser_output: NoiserOutput
+    # line_noiser_output: NoiserOutput
     poly_noiser_output: NoiserOutput
     num_nodes: torch.Tensor
     atom_mask: torch.Tensor
@@ -49,9 +49,9 @@ class EDMLoss:
         unique_atom_types: List[int] = [1, 6, 7, 8, 9],
         device: Literal['cpu', 'cuda'] = 'cpu',
     ):
-        line_noiser = LineNoiser(timesteps, sigma=DEFAULT_SIGMA_MIN).to(device)
+        # line_noiser = LineNoiser(timesteps, sigma=DEFAULT_SIGMA_MIN).to(device)
         poly_noiser = PolyNoiser(timesteps, precision=DEFAULT_POLY_PRECISION).to(device)
-        self.line_noiser = line_noiser
+        # self.line_noiser = line_noiser
         self.poly_noiser = poly_noiser
         self.denoiser = denoiser.to(device)
         self.timesteps = timesteps
@@ -163,17 +163,15 @@ class EDMLoss:
         
         # 2. Obtain the noisy positions
         # 2.1 Obtain the noisy radius
-        r = p.norm(dim=1, keepdim=True)
-        r_eps = torch.randn(r.size(), device=device) * atom_mask
-        line_noiser_output = self.line_noiser.forward_batch(t, batch)
         mid_radius = self.mid_shell[shell_id].unsqueeze(1)
-        alpha = line_noiser_output.alpha
-        force = alpha * (r - mid_radius) + mid_radius
-        r_t = force + line_noiser_output.sigma * r_eps
+        r = p.norm(dim=1, keepdim=True) - mid_radius
+        r_eps = torch.randn(r.size(), device=device) * atom_mask
+        r_t = poly_noiser_output.alpha * r + poly_noiser_output.sigma * r_eps
         r_t = r_t * atom_mask + r * (1 - atom_mask)
+        r_t = r_t + mid_radius
 
         # 2.2 Obtain the noisy angle
-        v = p / r
+        v = p / p.norm(dim=1, keepdim=True)
         v_eps = torch.randn(v.size(), device=device)
         v_eps /= v_eps.norm(dim=1, keepdim=True)
         v_eps = v_eps * atom_mask
@@ -199,7 +197,7 @@ class EDMLoss:
             x_eps_pred=x_pred, r_eps_pred=r_pred, v_eps_pred=v_pred,
             x=x, r=r, v=v,
             x_zt=x_zt, p_zt=p_zt,
-            line_noiser_output=line_noiser_output,
+            # line_noiser_output=line_noiser_output,
             poly_noiser_output=poly_noiser_output,
             num_nodes=num_nodes,
             atom_mask=atom_mask
@@ -231,7 +229,7 @@ class EDMLoss:
         """Calculate the loss at timestep t = 0.
         """
         # 1. Rescale sigma for the atom types and one-hot encoded atom types
-        sigma_x = output.line_noiser_output.sigma * self.norm_values.x
+        sigma_x = output.poly_noiser_output.sigma * self.norm_values.x
 
         # 2. Calculate the loss_t0 for the positions. See Eq. (19) in the paper.
         loss_t0_r = self._calc_batch_mse(

@@ -29,9 +29,9 @@ class EDMSampler:
         device: Literal['cpu', 'cuda'] = 'cpu',
         annealing_rate: float = 0.5,
     ):
-        line_noiser = LineNoiser(timesteps, sigma=DEFAULT_SIGMA_MIN).to(device)
+        # line_noiser = LineNoiser(timesteps, sigma=DEFAULT_SIGMA_MIN).to(device)
         poly_noiser = PolyNoiser(timesteps, precision=DEFAULT_POLY_PRECISION).to(device)
-        self.line_noiser = line_noiser
+        # self.line_noiser = line_noiser
         self.poly_noiser = poly_noiser
         self.denoiser = denoiser.to(device)
         self.timesteps = timesteps
@@ -97,7 +97,7 @@ class EDMSampler:
         batch_size = batch.max().item() + 1
         focus_shell = torch.full((batch_size, 1), fill_value=focus_shell, device=device)
         traj = {
-            'p': [r * v * self.norm_values.p],
+            'p': [(r + self.mid_shell[focus_shell]) * v * self.norm_values.p],
             'x': [self._n2atom_num(x * self.norm_values.x)],
         }
         for s in reversed(range(0, self.timesteps)):
@@ -106,13 +106,13 @@ class EDMSampler:
             s = s / self.timesteps
             t = t / self.timesteps
             x, r, v = self._sample_zs(s, t, x, r, v, batch, atom_mask, focus_shell, context)
-            p = r * v
+            p = (r + self.mid_shell[focus_shell]) * v
             
             traj['p'].append(p * self.norm_values.p)
             traj['x'].append(self._n2atom_num(x * self.norm_values.x))
     
         x, v = self._sample_x(x, r, v, batch, atom_mask, focus_shell, context)
-        p = r * v
+        p = (r + self.mid_shell[focus_shell]) * v
         traj['p'].append(p * self.norm_values.p)
         traj['x'].append(self._n2atom_num(x * self.norm_values.x))
     
@@ -130,7 +130,10 @@ class EDMSampler:
         focus_shell: torch.Tensor,
         context: torch.Tensor = None,
     ):
-        p = r * v
+        print(r, v.norm(dim=1))
+        mid_radius = self.mid_shell[focus_shell]
+        r_real = r + mid_radius
+        p = r_real * v
         noise_s = self.poly_noiser.forward_batch(s, batch)
         noise_t = self.poly_noiser.forward_batch(t, batch)
         sigma_s, gamma_s = noise_s.sigma, noise_s.gamma
@@ -149,30 +152,21 @@ class EDMSampler:
         p_eps_hat, x_eps_hat = self.denoiser(
             t, p, x, focus_shell, atom_mask=atom_mask, context=context, batch=batch
         )
-        x_eps_hat = x_eps_hat * atom_mask
+        # x_eps_hat = x_eps_hat * atom_mask
         r_eps_hat = p_eps_hat.norm(dim=1, keepdim=True)
         v_eps_hat = p_eps_hat / r_eps_hat
 
-        xv = torch.cat([x, v], dim=1)
-        xv_eps_hat = torch.cat([x_eps_hat, v_eps_hat], dim=1)
-        mu = xv / alpha_ts - (sigma_ts2 / alpha_ts / sigma_t) * xv_eps_hat
+        xvr = torch.cat([x, v, r], dim=1)
+        xvr_eps_hat = torch.cat([x_eps_hat, v_eps_hat, r_eps_hat], dim=1)
+        mu = xvr / alpha_ts - (sigma_ts2 / alpha_ts / sigma_t) * xvr_eps_hat
         sigma = sigma_ts * sigma_s / sigma_t
         
-        xv_s = self.sample_normal(mu, atom_mask, sigma, batch)
-        xv_s = xv * (1 - atom_mask) + xv_s * atom_mask
+        xvr_s = self.sample_normal(mu, atom_mask, sigma, batch)
+        xvr_s = xvr * (1 - atom_mask) + xvr_s * atom_mask
         
-        x_zs, v_zs = xv_s.split([x.size(1), v.size(1)], dim=1)
-        v_zs = v_zs / v_zs.norm(dim=1, keepdim=True)
-
+        x_zs, v_zs, r_zs = xvr_s.split([x.size(1), v.size(1), r.size(1)], dim=1)
+        v_zs = v_zs / (v_zs.norm(dim=1, keepdim=True) + 1e-12)
         # 4. Calculate r_zs
-        delta_t = t - s
-        r_zs = r
-        if (t - 1.0) > 1e-5:
-            r_zs = (1 - (t - delta_t) / (1 - t)) * (r - r_eps_hat * DEFAULT_SIGMA_MIN)
-        if (t - delta_t) > 1e-5:
-            eps = torch.randn_like(r_zs)
-            r_zs = r_zs + t ** self.annealing_rate * math.sqrt(2) * eps * DEFAULT_SIGMA_MIN
-        r_zs = r_zs * atom_mask + r * (1 - atom_mask)
 
         return x_zs, r_zs, v_zs
     
@@ -234,11 +228,9 @@ class EDMSampler:
         batch = torch.repeat_interleave(
             torch.arange(num_samples, device=num_nodes.device), num_nodes
         )
-        mid_radius = self.mid_shell[focus_shell]
         
         # 1. Sample the initial radius
-        r_eps = torch.randn((total_nodes, 1), device=num_nodes.device)
-        r = mid_radius + r_eps * DEFAULT_SIGMA_MIN
+        r = torch.randn((total_nodes, 1), device=num_nodes.device)
         
         # 2. Sample the initial angle
         v_eps = torch.randn((total_nodes, 3), device=num_nodes.device)
