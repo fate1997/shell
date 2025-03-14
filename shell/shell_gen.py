@@ -13,7 +13,7 @@ from torch_scatter import scatter_mean, segment_csr
 from tqdm import tqdm
 
 from shell.data import MolDataset
-from shell.denoiser import EGNNDenoiser
+from shell.denoiser import EGNNDenoiser, GVPDenoiser
 from shell.analysis.mol_sample import MolSample, MolSampleList
 from shell.diffusion.loss import EDMLoss
 from shell.diffusion.sample import EDMSampler
@@ -28,7 +28,7 @@ class ShellGen(pl.LightningModule):
     ):
         super().__init__()
         self.config = OmegaConf.load(config) if isinstance(config, str) else config
-        self.denoiser = EGNNDenoiser(**self.config['denoiser'])
+        self.denoiser = GVPDenoiser(**self.config['denoiser'])
         device = self.config['train']['trainer_args']['accelerator']
         device = 'cuda' if device == 'gpu' else 'cpu'
         self.loss_fn = EDMLoss(
