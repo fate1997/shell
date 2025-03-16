@@ -423,7 +423,7 @@ class GVPDenoiser(Denoiser):
         # 2. Forward pass through GVP
         h = self.h_embedding(h)
         shell_emb = self.shell_embedding(focus_shell_id.squeeze(1))
-        h = h + shell_emb
+        h = h + shell_emb[batch]
         if context is not None:
             h = torch.cat([h, context], dim=1)
         h_final, vel = self.gvp(h, x, edge_index)
