@@ -27,6 +27,11 @@ lr_scheduler:
   warmup_length: 0.0
   weight_decay: 1.0e-12
 
+path:
+  x_scheduler: 'poly'
+  v_scheduler: 'ot'
+  r_scheduler: 'ot'
+
 sample:
   unique_atom_nums: [1, 6, 7, 8, 9]
   timesteps: 1000

@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import radius_graph
 
-from shell.denoiser.base import Denoiser
-from shell.denoiser.submodule import (DenseLayer, SinEmbedding, coord2diff,
+from shell.model.base import VectorField
+from shell.model.submodule import (DenseLayer, SinEmbedding, coord2diff,
                                       unsorted_segment_sum)
 from shell.utils.decorator import register_init_params
 
@@ -271,7 +271,7 @@ class EGNN(nn.Module):
 
 
 @register_init_params
-class EGNNDenoiser(Denoiser):
+class EGNNVectorField(VectorField):
     def __init__(
         self, 
         in_node_nf: int, 

@@ -7,21 +7,21 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.distributions import Categorical
-from torch_geometric.data import Batch
 from torch_geometric.utils import subgraph
 from torch_scatter import scatter_mean, segment_csr
 from tqdm import tqdm
+from torch import nn
+from flow_matching.loss import MixturePathGeneralizedKL
 
-from shell.data import MolDataset
-from shell.denoiser import EGNNDenoiser, GVPDenoiser
 from shell.analysis.mol_sample import MolSample, MolSampleList
-from shell.diffusion.loss import EDMLoss
-from shell.diffusion.sample import EDMSampler
-from shell.utils.settings import QM9_SHELL_RADIUS
+from shell.data import MolDataset, Mol, SphMol
+from shell.model import EGNNVectorField, GVPVectorField
 from shell.utils.for_training import LRScheduler
+from shell.utils.settings import QM9_SHELL_RADIUS
+from shell.path import SphMolPath
 
 
-class ShellGen(pl.LightningModule):
+class ShellFlow(pl.LightningModule):
     def __init__(
         self, 
         config: Union[DictConfig, str],
@@ -31,22 +31,25 @@ class ShellGen(pl.LightningModule):
 
         # Setup denoiser
         if self.config['train']['model'] == 'gvp':
-            self.denoiser = GVPDenoiser(**self.config['gvp'])
+            self.vf = GVPVectorField(**self.config['gvp'])
         elif self.config['train']['model'] == 'egnn':
-            self.denoiser = EGNNDenoiser(**self.config['egnn'])
+            self.vf = EGNNVectorField(**self.config['egnn'])
         else:
             raise ValueError(f"Unknown model: {self.config['train']['model']}")
-
-        device = self.config['train']['trainer_args']['accelerator']
-        device = 'cuda' if device == 'gpu' else 'cpu'
-        self.loss_fn = EDMLoss(
-            denoiser=self.denoiser,
-            timesteps=self.config['sample']['timesteps'],
-            num_shells=len(QM9_SHELL_RADIUS) - 1,
-            # norm_values=(1, 4, 10),
-            unique_atom_types=self.config['sample']['unique_atom_nums'],
-            device=device
+        
+        # Setup path
+        self.path = SphMolPath(
+            x_scheduler=self.config['path']['x_scheduler'],
+            v_scheduler=self.config['path']['v_scheduler'],
+            r_scheduler=self.config['path']['r_scheduler']
         )
+        
+        # Setup Loss Function
+        self.loss_fn = {
+            'x': MixturePathGeneralizedKL(self.path.x_path),
+            'v': nn.MSELoss(),
+            'r': nn.MSELoss()
+        }
     
     def setup(self, stage: Optional[str] = None):
         if stage == 'fit':
@@ -73,42 +76,43 @@ class ShellGen(pl.LightningModule):
     def test_dataloader(self):
         return self.test_loader
     
-    def forward(self, batch: Batch) -> torch.Tensor:
-        batch_size = batch.batch_size
-        focus_shell_id = torch.randint(
-            0, len(QM9_SHELL_RADIUS) - 1, (batch_size, 1), device=self.device
-        )
-        # Remove nodes where the shell_id > focus_shell_id
-        mask = batch.shell_id <= focus_shell_id[batch.batch].squeeze(1)
-        batch = batch.get_submol(mask)
-        loss, loss_part = self.loss_fn(
-            x=batch.x,
-            p=batch.pos,
-            edge_index=batch.edge_index,
-            shell_id=batch.shell_id,
-            focus_shell_id=focus_shell_id,
-            batch=batch.batch,
-            return_parts=True
-        )
-        self.log_dict(loss_part, prog_bar=True, on_step=True, sync_dist=True, batch_size=batch_size)
+    def forward(self, mol: Mol) -> torch.Tensor:
+        num_atom_types = len(self.config['sample']['unique_atom_nums'])
+        batch_size = self.config['train']['batch_size']
+        
+        sphmol1 = SphMol.from_mol(mol)
+        sphmol0 = sphmol1.get_prior(num_atom_types)
+        
+        t = torch.rand((batch_size, ), device=self.device)[mol.batch]
+        sphmolt, dvdt, drdt = self.path.sample(sphmol0, sphmol1, t)
+        x_pred, dvdt_pred, drdt_pred = self.vf(sphmolt, t)
+        
+        loss_dict = {
+            'x': self.loss_fn['x'](x_pred, sphmol1.x, sphmolt.x, t),
+            'v': self.loss_fn['v'](dvdt_pred, dvdt),
+            'r': self.loss_fn['r'](drdt_pred, drdt)
+        }
+        
+        self.log_dict(loss_dict, prog_bar=True, on_step=True, sync_dist=True, batch_size=batch_size)
+        loss = loss_dict['x'] + loss_dict['v'] + loss_dict['r']
         return loss
     
-    def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
+    def training_step(self, mol: Mol, batch_idx: int) -> torch.Tensor:
         if not hasattr(self, 'batches_per_epoch'):
             self.batches_per_epoch = len(self.trainer.train_dataloader)
         epoch_exact = self.current_epoch + batch_idx / self.batches_per_epoch
         self.lr_scheduler.step_lr(epoch_exact)
-        loss = self(batch)
+        loss = self(mol)
         self.log('train_total_loss', loss, prog_bar=True, on_step=True, sync_dist=True)
         return loss
     
-    def validation_step(self, batch: Batch, batch_idx: int):
-        loss = self(batch)
+    def validation_step(self, mol: Mol, batch_idx: int):
+        loss = self(mol)
         self.log(
             'val_total_loss', 
             loss, 
             prog_bar=True, 
-            batch_size=batch.batch_size, 
+            batch_size=mol.batch_size, 
             on_step=True, 
             sync_dist=True
         )
@@ -129,12 +133,4 @@ class ShellGen(pl.LightningModule):
         record_traj: bool = False,
         context: torch.Tensor = None,
     ) -> MolSampleList:
-        sampler = EDMSampler(
-            denoiser=self.denoiser,
-            timesteps=self.config['sample']['timesteps'],
-            num_shells=len(QM9_SHELL_RADIUS) - 1,
-            unique_atom_types=self.config['sample']['unique_atom_nums'],
-            device=self.device,
-            annealing_rate=self.config['sample']['annealing_rate']
-        )
-        return sampler.sample(num_nodes, record_traj, context)
+        raise NotImplementedError

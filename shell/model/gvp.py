@@ -11,8 +11,8 @@ from torch_geometric.nn import MessagePassing, radius_graph
 from torch_scatter import scatter_mean
 
 from shell.utils.decorator import register_init_params
-from shell.denoiser.base import Denoiser
-from shell.denoiser.submodule import DenseLayer
+from shell.model.base import VectorField
+from shell.model.submodule import DenseLayer
 
 s_V = Tuple[torch.Tensor, torch.Tensor]
 
@@ -363,7 +363,7 @@ class GVPNetwork(nn.Module):
 
 
 @register_init_params
-class GVPDenoiser(Denoiser):
+class GVPVectorField(VectorField):
     def __init__(
         self, 
         in_node_nf: int, 

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from torch import nn
 
 
-class Denoiser(nn.Module, ABC):
+class VectorField(nn.Module, ABC):
     @abstractmethod
     def forward(self, *args, **kwargs):
         pass

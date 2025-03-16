@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 from torch_geometric.data import Data
+from dataclasses import dataclass
 
 
 class Mol(Data):
@@ -54,7 +55,7 @@ class Mol(Data):
             # Ensure that the batch is contiguous
             batch = torch.unique(batch, return_inverse=True)[1]
             mol.batch = batch
-        return mol    
+        return mol
     
     def _get_atom_num(
         self, 
@@ -75,3 +76,33 @@ class Mol(Data):
     @property
     def num_bonds(self):
         return self.num_edges
+
+
+@dataclass
+class SphMol:
+    x: torch.Tensor
+    v: torch.Tensor
+    r: torch.Tensor
+    b: torch.Tensor
+    
+    def __post_init__(self):
+        assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
+        assert self.v.norm(dim=-1).allclose(torch.ones_like(self.v))
+        assert (self.r > 0).all()
+    
+    @classmethod
+    def from_mol(cls, mol: Mol):
+        pos = mol.pos
+        r = pos.norm(dim=-1, keepdim=True)
+        v = pos / r
+        return cls(mol.x, v, r, mol.batch)
+    
+    def to_mol(self):
+        pos = self.v * self.r
+        return Mol(x=self.x, pos=pos, batch=self.b)
+    
+    def get_prior(self, num_atom_types: int) -> 'SphMol':
+        x0 = torch.randint_like(self.x, high=num_atom_types)
+        v0 = torch.randn_like(self.v)
+        r0 = torch.randn_like(self.r)
+        return SphMol(x0, v0, r0, self.b)
