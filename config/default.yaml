@@ -8,6 +8,7 @@ train:
   report_interval: 100
   save_interval: 1000
   num_workers: 16
+  model: 'egnn'
   trainer_args:
     accelerator: gpu
     accumulate_grad_batches: 1
@@ -40,8 +41,14 @@ dataset:
   force_reload: false
   add_xmask: true
 
-denoiser:
-  in_node_nf: 6
+gvp:
+  in_node_nf: 7
+  hidden_nf: 256
+  n_layers: 6
+  attention: true
+
+egnn:
+  in_node_nf: 7
   hidden_nf: 256
   n_layers: 6
   attention: true

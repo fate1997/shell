@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--processed-name', type=str, 
                         default=config['dataset']['processed_name'])
+    parser.add_argument('--model', type=str, default='gvp')
     parser.add_argument('--timesteps', type=int, default=1000)
     args = parser.parse_args()
     
