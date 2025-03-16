@@ -28,7 +28,15 @@ class ShellGen(pl.LightningModule):
     ):
         super().__init__()
         self.config = OmegaConf.load(config) if isinstance(config, str) else config
-        self.denoiser = GVPDenoiser(**self.config['denoiser'])
+
+        # Setup denoiser
+        if self.config['train']['model'] == 'gvp':
+            self.denoiser = GVPDenoiser(**self.config['gvp'])
+        elif self.config['train']['model'] == 'egnn':
+            self.denoiser = EGNNDenoiser(**self.config['egnn'])
+        else:
+            raise ValueError(f"Unknown model: {self.config['train']['model']}")
+
         device = self.config['train']['trainer_args']['accelerator']
         device = 'cuda' if device == 'gpu' else 'cpu'
         self.loss_fn = EDMLoss(
