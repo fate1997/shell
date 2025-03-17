@@ -4,6 +4,8 @@ import torch
 from torch_geometric.data import Data
 from dataclasses import dataclass
 
+from shell.utils.settings import MID_RADIUS
+
 
 class Mol(Data):
     def __init__(
@@ -78,6 +80,17 @@ class Mol(Data):
         return self.num_edges
 
 
+class RadiusTransform:
+    def __init__(self, mid_radius: float = MID_RADIUS):
+        self.mid_radius = mid_radius
+    
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        return torch.log(r / self.mid_radius)
+    
+    def inverse(self, r: torch.Tensor) -> torch.Tensor:
+        return self.mid_radius * torch.exp(r)
+
+
 @dataclass
 class SphMol:
     x: torch.Tensor
@@ -89,16 +102,32 @@ class SphMol:
         assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
         assert self.v.norm(dim=-1).allclose(torch.ones_like(self.v))
         assert (self.r > 0).all()
-    
+
     @classmethod
-    def from_mol(cls, mol: Mol):
-        pos = mol.pos
+    def from_cartesian(
+        cls,
+        x: torch.Tensor,
+        pos: torch.Tensor,
+        batch: torch.Tensor,
+        mid_radius: float = MID_RADIUS
+    ) -> 'SphMol':
         r = pos.norm(dim=-1, keepdim=True)
         v = pos / r
-        return cls(mol.x, v, r, mol.batch)
+        r = RadiusTransform(mid_radius).forward(r)
+        return cls(x, v, r, batch)
+
+    @classmethod
+    def from_mol(cls, mol: Mol, mid_radius: float = MID_RADIUS) -> 'SphMol':
+        return cls.from_cartesian(mol.x, mol.pos, mol.batch, mid_radius)
     
-    def to_mol(self):
-        pos = self.v * self.r
+    def to_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
+        r = RadiusTransform(mid_radius).inverse(self.r)
+        pos = self.v * r
+        return pos
+    
+    def to_mol(self, mid_radius: float = MID_RADIUS):
+        r = RadiusTransform(mid_radius).inverse(self.r)
+        pos = self.v * r
         return Mol(x=self.x, pos=pos, batch=self.b)
     
     def get_prior(self, num_atom_types: int) -> 'SphMol':

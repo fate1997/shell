@@ -5,20 +5,21 @@ from typing import Dict, Optional, Union
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
+from flow_matching.loss import MixturePathGeneralizedKL
+from flow_matching.utils.manifolds import Sphere
 from omegaconf import DictConfig, OmegaConf
+from torch import nn
 from torch.distributions import Categorical
 from torch_geometric.utils import subgraph
 from torch_scatter import scatter_mean, segment_csr
 from tqdm import tqdm
-from torch import nn
-from flow_matching.loss import MixturePathGeneralizedKL
 
 from shell.analysis.mol_sample import MolSample, MolSampleList
-from shell.data import MolDataset, Mol, SphMol
+from shell.data import Mol, MolDataset, SphMol
 from shell.model import EGNNVectorField, GVPVectorField
+from shell.path import SphMolPath
 from shell.utils.for_training import LRScheduler
 from shell.utils.settings import QM9_SHELL_RADIUS
-from shell.path import SphMolPath
 
 
 class ShellFlow(pl.LightningModule):
@@ -37,12 +38,13 @@ class ShellFlow(pl.LightningModule):
         else:
             raise ValueError(f"Unknown model: {self.config['train']['model']}")
         
-        # Setup path
+        # Setup path and manifold
         self.path = SphMolPath(
             x_scheduler=self.config['path']['x_scheduler'],
             v_scheduler=self.config['path']['v_scheduler'],
             r_scheduler=self.config['path']['r_scheduler']
         )
+        self.manifold = Sphere()
         
         # Setup Loss Function
         self.loss_fn = {
@@ -85,10 +87,11 @@ class ShellFlow(pl.LightningModule):
         
         t = torch.rand((batch_size, ), device=self.device)[mol.batch]
         sphmolt, dvdt, drdt = self.path.sample(sphmol0, sphmol1, t)
-        x_pred, dvdt_pred, drdt_pred = self.vf(sphmolt, t)
+        molt = sphmolt.to_mol()
+        x_pred, dvdt_pred, drdt_pred = self.vf(molt, t)
         
         loss_dict = {
-            'x': self.loss_fn['x'](x_pred, sphmol1.x, sphmolt.x, t),
+            'x': self.loss_fn['x'](x_pred.argmax(-1), sphmol1.x.argmax(-1), sphmolt.x.argmax(-1), t),
             'v': self.loss_fn['v'](dvdt_pred, dvdt),
             'r': self.loss_fn['r'](drdt_pred, drdt)
         }

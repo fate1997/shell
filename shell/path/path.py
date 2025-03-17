@@ -1,6 +1,7 @@
 from typing import Literal, Tuple
 
 import torch
+import torch.nn.functional as F
 from flow_matching.path import (AffineProbPath, GeodesicProbPath,
                                 MixtureDiscreteProbPath)
 from flow_matching.path.scheduler import (CondOTScheduler,
@@ -35,7 +36,10 @@ class SphMolPath:
         sphmol1: SphMol,
         t: torch.Tensor
     ) -> Tuple[SphMol, torch.Tensor, torch.Tensor]:
-        x_sample = self.x_path.sample(sphmol0.x, sphmol1.x, t)
+        num_atom_types = sphmol0.x.shape[1]        
+        x_sample = self.x_path.sample(sphmol0.x.argmax(-1), sphmol1.x.argmax(-1), t)
+        x_sample = F.one_hot(x_sample.x_t, num_classes=num_atom_types).float()
+        
         v_sample = self.v_path.sample(sphmol0.v, sphmol1.v, t)
         r_sample = self.r_path.sample(sphmol0.r, sphmol1.r, t)
         

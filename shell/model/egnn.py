@@ -8,6 +8,7 @@ from shell.model.base import VectorField
 from shell.model.submodule import (DenseLayer, SinEmbedding, coord2diff,
                                       unsorted_segment_sum)
 from shell.utils.decorator import register_init_params
+from shell.data import Mol
 
 
 class GCL(nn.Module):
@@ -302,19 +303,19 @@ class EGNNVectorField(VectorField):
         )
         self.in_node_nf = in_node_nf
         self.context_node_nf = context_node_nf
-        self.shell_embedding = nn.Embedding(num_shells, in_node_nf - 1)
+        # self.shell_embedding = nn.Embedding(num_shells, in_node_nf - 1)
     
     def forward(
-        self, 
+        self,
+        mol: Mol, 
         t: torch.Tensor, 
-        x: torch.Tensor, 
-        h: torch.Tensor,
-        focus_shell_id: torch.Tensor,
-        edge_index: torch.Tensor = None,
+        # x: torch.Tensor, 
+        # h: torch.Tensor,
+        # focus_shell_id: torch.Tensor,
         atom_mask: torch.Tensor = None,
-        context: torch.Tensor = None,
-        batch: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # context: torch.Tensor = None,
+        # batch: torch.Tensor = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of the EGNNDenoiser model.
         Args:
             t: Time. [batch_size, 1]
@@ -326,24 +327,33 @@ class EGNNVectorField(VectorField):
             context: [batch_size, context_node_nf]
             batch: [n_nodes]
         """
+        batch = mol.batch
+        pos = mol.pos
+        h = mol.x
+        
+        if atom_mask is None:
+            atom_mask = torch.ones(h.shape[0], device=h.device)
+        
         # 1. Concatenate time and context (if provided) to h
         if batch is None:
-            batch = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
-        shell_emb = self.shell_embedding(focus_shell_id.squeeze(1)) # [batch_size, in_node_nf]
-        h = h + shell_emb[batch]
+            batch = torch.zeros(pos.shape[0], dtype=torch.long, device=pos.device)
+        # shell_emb = self.shell_embedding(focus_shell_id.squeeze(1)) # [batch_size, in_node_nf]
+        # h = h + shell_emb[batch]
         h = torch.cat([h, t[batch]], dim=1)
-        if context is not None:
-            h = torch.cat([h, context], dim=1)
+        # if context is not None:
+        #     h = torch.cat([h, context], dim=1)
         if edge_index is None:
-            edge_index = radius_graph(x, r=1e+50, batch=batch, max_num_neighbors=100) #!NOTICE
+            edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100) #!NOTICE
 
         # 2. Forward pass through EGNN
-        h_final, x_final = self.egnn(h, x, edge_index, atom_mask=atom_mask)
+        h_final, pos_final = self.egnn(h, pos, edge_index, atom_mask=atom_mask)
         
         # 3. Post-process outputs
-        if context is not None:
-            h_final = h_final[:, :-self.context_node_nf]
+        # if context is not None:
+        #     h_final = h_final[:, :-self.context_node_nf]
         h_final = h_final[:, :-1]
-        x_final = x_final - x
-
-        return x_final, h_final
+        # pos_final = pos_final - pos
+        r = pos_final.norm(dim=-1, keepdim=True)
+        v = pos_final / (r + 1e-12)
+        
+        return h_final, v, r
