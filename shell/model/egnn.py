@@ -332,7 +332,7 @@ class EGNNVectorField(VectorField):
         h = mol.x
         
         if atom_mask is None:
-            atom_mask = torch.ones(h.shape[0], device=h.device)
+            atom_mask = torch.ones((h.shape[0], 1), device=h.device)
         
         # 1. Concatenate time and context (if provided) to h
         if batch is None:
@@ -342,8 +342,7 @@ class EGNNVectorField(VectorField):
         h = torch.cat([h, t[batch]], dim=1)
         # if context is not None:
         #     h = torch.cat([h, context], dim=1)
-        if edge_index is None:
-            edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100) #!NOTICE
+        edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100) #!NOTICE
 
         # 2. Forward pass through EGNN
         h_final, pos_final = self.egnn(h, pos, edge_index, atom_mask=atom_mask)

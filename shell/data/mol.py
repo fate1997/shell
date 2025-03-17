@@ -81,14 +81,19 @@ class Mol(Data):
 
 
 class RadiusTransform:
-    def __init__(self, mid_radius: float = MID_RADIUS):
+    def __init__(
+        self, 
+        mid_radius: float = MID_RADIUS,
+        scale: float = 5.0
+    ):
         self.mid_radius = mid_radius
+        self.scale = scale
     
     def forward(self, r: torch.Tensor) -> torch.Tensor:
-        return torch.log(r / self.mid_radius)
+        return torch.log(r / self.mid_radius) * self.scale
     
     def inverse(self, r: torch.Tensor) -> torch.Tensor:
-        return self.mid_radius * torch.exp(r)
+        return self.mid_radius * torch.exp(r / self.scale)
 
 
 @dataclass
@@ -100,8 +105,7 @@ class SphMol:
     
     def __post_init__(self):
         assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
-        assert self.v.norm(dim=-1).allclose(torch.ones_like(self.v))
-        assert (self.r > 0).all()
+        assert self.v.norm(dim=-1).allclose(torch.ones_like(self.v[:, 0]))
 
     @classmethod
     def from_cartesian(
@@ -120,7 +124,7 @@ class SphMol:
     def from_mol(cls, mol: Mol, mid_radius: float = MID_RADIUS) -> 'SphMol':
         return cls.from_cartesian(mol.x, mol.pos, mol.batch, mid_radius)
     
-    def to_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
+    def get_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
         r = RadiusTransform(mid_radius).inverse(self.r)
         pos = self.v * r
         return pos
@@ -130,8 +134,10 @@ class SphMol:
         pos = self.v * r
         return Mol(x=self.x, pos=pos, batch=self.b)
     
-    def get_prior(self, num_atom_types: int) -> 'SphMol':
+    def get_prior(self) -> 'SphMol':
+        num_atom_types = self.x.shape[1]
         x0 = torch.randint_like(self.x, high=num_atom_types)
         v0 = torch.randn_like(self.v)
+        v0 = v0 / v0.norm(dim=-1, keepdim=True)
         r0 = torch.randn_like(self.r)
         return SphMol(x0, v0, r0, self.b)
