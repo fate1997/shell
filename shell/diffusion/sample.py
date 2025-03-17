@@ -36,7 +36,7 @@ class EDMSampler:
         self.denoiser = denoiser.to(device)
         self.timesteps = timesteps
         self.norm_values = norm_values
-        self.num_atom_types = len(unique_atom_types)
+        self.num_atom_types = len(unique_atom_types) + 1
         if not isinstance(unique_atom_types, torch.Tensor):
             unique_atom_types = torch.tensor(unique_atom_types).to(device)
         self.unique_atom_types = unique_atom_types
@@ -229,7 +229,7 @@ class EDMSampler:
         focus_shell: int,
     ) -> Dict[str, torch.Tensor]:
         num_samples = num_nodes.shape[0]
-        num_node_types = len(self.unique_atom_types)
+        num_node_types = self.num_atom_types
         total_nodes = num_nodes.sum().item()
         batch = torch.repeat_interleave(
             torch.arange(num_samples, device=num_nodes.device), num_nodes
@@ -258,5 +258,6 @@ class EDMSampler:
     def _n2atom_num(self, x: torch.Tensor) -> torch.Tensor:
         unique_atom_nums = torch.LongTensor(self.unique_atom_types.cpu())
         x = x.argmax(dim=-1).detach().cpu()
+        x[x == len(unique_atom_nums)] = 1
         atom_num = unique_atom_nums[x]
         return atom_num.detach().cpu()
