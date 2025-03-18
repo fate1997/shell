@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch_scatter import scatter_add
 
 
 def identify_intervals(
@@ -40,3 +41,21 @@ def get_mid_shell(
         shell_radius = torch.tensor(shell_radius)
     mid_radius = (shell_radius[1:] + shell_radius[:-1]) / 2
     return mid_radius
+
+
+def remove_partial_mean_with_mask(x, center_of_mass_mask, batch_seg) -> torch.Tensor:
+    """
+    Subtract center of mass of context from coordinates for all atoms.
+    """
+    x_masked = x * center_of_mass_mask
+    denom = scatter_add(center_of_mass_mask, batch_seg, dim=0).view(-1,1)
+    mean=scatter_add(x_masked, batch_seg, dim=0) / denom
+    x = x - mean[batch_seg]
+    return x
+
+def move_atom_to_top(xyz_str: str, atom_id: int):
+    lines = xyz_str.split('\n')
+    atom_line = lines[atom_id + 2]
+    del lines[atom_id + 2]
+    lines.insert(2, atom_line)
+    return '\n'.join(lines)

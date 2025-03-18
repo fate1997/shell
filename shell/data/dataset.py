@@ -1,77 +1,71 @@
 import os
 import os.path as osp
-from typing import List, Literal, Tuple
+from copy import deepcopy
+from typing import List, Tuple, Union
 
+import pandas as pd
 import torch
+from molSimplify.Classes.ligand import ligand_breakdown
+from molSimplify.Classes.mol3D import mol3D
 from rdkit import Chem, RDLogger
-from torch_geometric.data import Batch, Dataset
-from torch_geometric.loader import DataLoader
+from torch.nn import functional as F
+from torch_geometric.data import Dataset, download_url, extract_gz
 from tqdm import tqdm
 
 from shell.data.featurizer import ComposeFeaturizer
-from shell.data.mol import Mol
-from shell.data.rdmols import get_rdmols
+from shell.data.mol import TMC
+from shell.utils.constants import ELEMENT2NUM
+from shell.utils.geometry import move_atom_to_top, remove_partial_mean_with_mask
 
 RDLogger.DisableLog('rdApp.*')
+TMQM_URL = {
+    'data': (
+        'https://github.com/uiocompcat/tmQM/blob/master/tmQM/tmQM_X1.xyz.gz?raw=true',
+        'https://github.com/uiocompcat/tmQM/blob/master/tmQM/tmQM_X2.xyz.gz?raw=true',
+        'https://github.com/uiocompcat/tmQM/blob/master/tmQM/tmQM_X3.xyz.gz?raw=true'
+    ),
+    'label': 'https://github.com/uiocompcat/tmQM/blob/master/tmQM/tmQM_y.csv?raw=true'
+}
 
-
-class MolDataset(Dataset):
+class TMCDataset(Dataset):
     
     def __init__(
         self,
-        name: Literal['qm9'],
-        root: str='dataset',
+        root: str='datasets',
         feature_names: List[str]=None,
-        processed_name: str='',
+        processed_path: str='',
         force_reload: bool=False,
-        remove_hydrogens: bool=False,
+        remove_hydrogens: bool=True,
         add_smiles: bool=True,
         n_samples: int=-1,
-        add_xmask: bool=False
+        metal_type: List[str]=None,
+        ligatom_type: List[str]=None,
+        bonded_oct: bool=False,
+        max_num_atoms: int=-1,
+        consider_metal_type: bool=False
     ):
         super().__init__()
-        
-        self.name = name
+        self.root = root
         self.feature_names = feature_names
+        self.remove_hydrogens = remove_hydrogens
+        self.add_smiles = add_smiles
+        self.n_samples = n_samples
+        self.metal_type = metal_type
+        self.ligatom_type = ligatom_type
+        self.bonded_oct = bonded_oct
+        self.max_num_atoms = max_num_atoms
+        self.consider_metal_type = consider_metal_type
         
-        processed_path = osp.join(root, name, processed_name)
         if osp.exists(processed_path) and not force_reload:
             data = torch.load(processed_path)
             self.data_list = data['data_list']
             self.unique_atom_nums = data['unique_atom_nums']
             self.label_cols = data['label_cols']
         else:
-            raw_dir = osp.join(root, name, 'raw')
-            rdmols = get_rdmols(name, raw_dir=raw_dir)
-            data_list = []
-            self.unique_atom_nums = rdmols.unique_atom_nums
-            if add_xmask:
-                self.unique_atom_nums = self.unique_atom_nums + [0]
-            if n_samples == -1:
-                sample_ids = range(len(rdmols.rdmols))
-            else:
-                sample_ids = range(n_samples)
-            start_idx = 0
-            for j, i in enumerate(tqdm(sample_ids, desc='Featurizing')):
-                rdmol = rdmols.rdmols[i]
-                if remove_hydrogens:
-                    rdmol = Chem.RemoveHs(rdmol, sanitize=False)
-                if 'x' in self.feature_names:
-                    config = {'x': {'unique_atom_nums': self.unique_atom_nums}}
-                else:
-                    config = {}
-                mol_len = rdmol.GetNumAtoms()
-                mol_dict = ComposeFeaturizer(self.feature_names, config)(rdmol)
-                mol_dict['name'] = getattr(rdmols, 'names', [None]*mol_len)[i]
-                mol_dict['y'] = getattr(rdmols, 'labels', [None]*mol_len)[i]
-                mol_dict['id'] = j
-                start_idx += mol_len
-                if add_smiles:
-                    mol_dict['smiles'] = Chem.MolToSmiles(rdmol)
-                data_list.append(Mol(**mol_dict))
-            self.data_list = data_list
-            self.label_cols = rdmols.label_columns
-            
+            xyz_list, y_list = self._prepare_raw()
+            data_list, unique_atom_nums = self._prepare_rdmol(xyz_list, y_list)
+            self.data_list: List[TMC] = data_list
+            self.unique_atom_nums = torch.Tensor(unique_atom_nums)
             if processed_path:
                 os.makedirs(osp.dirname(processed_path), exist_ok=True)
                 torch.save({
@@ -80,35 +74,195 @@ class MolDataset(Dataset):
                     'label_cols': self.label_cols
                 }, processed_path)
     
-    def get(self, idx: int) -> Mol:
+    @classmethod
+    def from_processed(cls, processed_path: str):
+        return cls(processed_path=processed_path, force_reload=False)
+
+    def _prepare_raw(self) -> Tuple[List[str], List[torch.Tensor]]:
+        root_dir = osp.abspath(self.root)
+        raw_dir = osp.join(root_dir, 'tmqm', 'raw')
+        file_names = ['tmQM_X1.xyz', 'tmQM_X2.xyz', 'tmQM_X3.xyz', 'tmQM_y.csv']
+        raw_paths = [osp.join(raw_dir, name) for name in file_names]
+        
+        if not self.files_exist(raw_paths):
+            for url, raw_path in zip(TMQM_URL['data'], raw_paths[:3]):
+                zip_path = download_url(url, raw_dir)
+                extract_gz(zip_path, raw_dir)
+                os.unlink(zip_path)
+            download_url(TMQM_URL['label'], raw_dir)
+        
+        xyz_list = []
+        csd_codes = []
+        for raw_path in raw_paths:
+            with open(raw_path) as f:
+                xyzs = f.read().split('\n\n')[:-1]
+                for xyz in xyzs:
+                    csd_code = xyz.split('\n')[1][11:17]
+                    csd_codes.append(csd_code)
+                    xyz_list.append(xyz)
+        
+        df = pd.read_csv(raw_paths[-1], sep=';')
+        df = df.drop(columns=['CSD_years'])
+        self.label_cols = df.columns[1:].tolist()
+        df.set_index('CSD_code', inplace=True)
+        y_list = df.loc[csd_codes].values.tolist()
+        return xyz_list, y_list
+
+    def _prepare_rdmol(
+        self, 
+        xyz_list: List[str], 
+        y_list: List[torch.Tensor]
+    ) -> Tuple[List[TMC], List[int]]:
+        n_samples = len(xyz_list) if self.n_samples == -1 else self.n_samples
+        sample_ids = list(range(len(xyz_list)))[:n_samples]
+    
+        unique_atom_nums = set()
+        rdmols, ligand_groups, names, ys = [], [], [], []
+        skip_registry = {
+            'none_rdmol': 0,
+            'metal_count': 0,
+            'metal_type': 0,
+            'ligatom_type': 0,
+        }
+        for i in tqdm(sample_ids, desc='Loading TMCs'):
+            # Read xyz string to rdmol and mol3d
+            xyz = xyz_list[i]
+            ys.append(y_list[i])
+            mol = Chem.MolFromXYZBlock(xyz)
+            if mol is None:
+                skip_registry['none_rdmol'] += 1
+                continue
+            mol3d = mol3D()
+            mol3d.readfromstring(xyz)
+            metal = mol3d.findMetal(True)
+            if len(metal) != 1:
+                skip_registry['metal_count'] += 1
+                continue
+            if self.metal_type is not None:
+                if mol.GetAtomWithIdx(metal[0]).GetSymbol() not in self.metal_type:
+                    skip_registry['metal_type'] += 1
+                    continue
+            new_xyz = move_atom_to_top(xyz, metal[0])
+            mol = Chem.MolFromXYZBlock(new_xyz)
+            mol3d = mol3D()
+            mol3d.readfromstring(new_xyz)
+            
+            # Extract ligand groups
+            liglist, _, _ = ligand_breakdown(
+                mol3d, transition_metals_only=True, BondedOct=self.bonded_oct
+            )
+            n = mol.GetNumAtoms()
+            ligand_group = torch.zeros((n, len(liglist)), dtype=torch.long)
+            uniqe_atom_symbol = set()
+            for j, lig in enumerate(liglist):
+                ligand_group[lig, j] = 1
+                symbols = [mol.GetAtomWithIdx(int(i)).GetSymbol() for i in lig]
+                uniqe_atom_symbol.update(symbols)
+            unique_atom_num = list(map(ELEMENT2NUM.get, uniqe_atom_symbol))
+
+            if self.consider_metal_type:
+                unique_atom_num += [mol.GetAtomWithIdx(0).GetAtomicNum()]
+            if self.ligatom_type is not None:
+                if not uniqe_atom_symbol.issubset(self.ligatom_type):
+                    skip_registry['ligatom_type'] += 1
+                    continue
+            
+            rdmols.append(mol)
+            ligand_groups.append(ligand_group)
+            names.append(xyz.split('\n')[1])
+            unique_atom_nums.update(unique_atom_num)
+        print(f'Skip registry: {skip_registry}')
+        
+        # Featurize TMCs
+        unique_atom_nums = list(sorted(unique_atom_nums))
+        config = {'x': {'unique_atom_nums': unique_atom_nums}}
+        featurizer = ComposeFeaturizer(self.feature_names, config)
+        data_list = []
+        bar = tqdm(total=len(rdmols), desc='Featurizing TMCs')
+        max_num_ligands = max([l.size(1) for l in ligand_groups])
+        for mol, ligand_group, name, y in zip(rdmols, ligand_groups, names, ys):
+            mol_dict = featurizer(mol)
+            mol_dict['name'] = name
+            mol_dict['y'] = torch.tensor(y, dtype=torch.float)
+            pad_size = max_num_ligands - ligand_group.size(1)
+            mol_dict['ligand_group'] = F.pad(ligand_group, (0, pad_size))
+            tmc = TMC(**mol_dict)
+            if self.remove_hydrogens:
+                tmc = tmc.remove_hydrogen()
+            if self.max_num_atoms == -1 or tmc.num_nodes <= self.max_num_atoms:
+                data_list.append(tmc)
+            bar.update(1)
+        bar.close()
+        return data_list, unique_atom_nums + [0]
+    
+    @staticmethod
+    def files_exist(files: List[str]) -> bool:
+        return len(files) != 0 and all([osp.exists(f) for f in files])
+    
+    def get(self, idx: int) -> TMC:
         return self.data_list[idx]
     
     def len(self) -> int:
         return len(self.data_list)
-
-    def get_loaders(
-        self,
-        batch_size: int,
-        n_train: int,
-        n_val: int,
-        num_workers: int = 0
-    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        dataset = self.shuffle(self)
-        assert n_train + n_val < len(dataset)
-        train_loader = DataLoader(
-            dataset[:n_train], batch_size, shuffle=True, num_workers=num_workers
-        )
-        val_loader = DataLoader(
-            dataset[n_train:n_train+n_val], batch_size, num_workers=num_workers
-        )
-        test_loader = DataLoader(
-            dataset[n_train+n_val:], batch_size, num_workers=num_workers
-        )
-        return train_loader, val_loader, test_loader
     
-    def sample_batch(
-        self,
-        batch_size: int = 64,
-    ) -> Batch:
-        loader = DataLoader(self, batch_size, shuffle=True)
-        return next(iter(loader))
+    def to_oneligand_task(self):
+        data_list = []
+        for data in self.data_list:
+            for i in range(1, data.ligand_group.size(1)):
+                ligand_mask = getattr(self, 'ligand_mask', None)
+                if data.ligand_group[:, i].sum() == 0 or ligand_mask is not None:
+                    continue
+                train_data = deepcopy(data)
+                train_data.ligand_mask = data.ligand_group[:, i].float().unsqueeze(-1)
+                train_data.pos = remove_partial_mean_with_mask(
+                    train_data.pos, 
+                    1 - train_data.ligand_mask, 
+                    torch.zeros((train_data.num_nodes, )).long()
+                )
+                data_list.append(train_data)
+        print(f'Expand dataset from {len(self.data_list)} to {len(data_list)}')
+        self.data_list = data_list
+    
+    def to_allligand_task(self):
+        data_list = []
+        for data in self.data_list:
+            ligand_mask = torch.ones((data.num_nodes, 1))
+            ligand_mask[0] = 0
+            train_data = deepcopy(data)
+            train_data.ligand_mask = ligand_mask
+            train_data.pos = remove_partial_mean_with_mask(
+                train_data.pos, 
+                1 - train_data.ligand_mask, 
+                torch.zeros((train_data.num_nodes, )).long()
+            )
+            data_list.append(train_data)
+        self.data_list = data_list
+        
+    def split_and_save(
+        self, 
+        n_train: Union[int, float], 
+        n_val: Union[int, float], 
+        save_dir: str
+    ):
+        dataset = self.shuffle(self)
+        if isinstance(n_train, float):
+            assert n_train > 0 and n_train < 1
+            n_train = int(n_train * len(dataset))
+        if isinstance(n_val, float):
+            assert n_val > 0 and n_val < 1
+            n_val = int(n_val * len(dataset))
+        assert n_train + n_val < len(dataset)
+        train_data = dataset[:n_train]
+        val_data = dataset[n_train:n_train+n_val]
+        test_data = dataset[n_train+n_val:]
+        os.makedirs(save_dir, exist_ok=True)
+        basic_dict = {
+            'unique_atom_nums': self.unique_atom_nums,
+            'label_cols': self.label_cols
+        }
+        for data, name in zip([train_data, val_data, test_data], 
+                              ['train', 'val', 'test']):
+            torch.save({
+                'data_list': data,
+                **basic_dict
+            }, osp.join(save_dir, f'{name}.pt'))

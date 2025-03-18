@@ -1,5 +1,18 @@
 from typing import List
+from rdkit import Chem
 
+NUM2ELEMENT = {num: Chem.GetPeriodicTable().GetElementSymbol(num) 
+               for num in range(100)}
+ELEMENT2NUM = {v: k for k, v in NUM2ELEMENT.items()}
+
+BOND_ORDER_MAP = [
+    Chem.rdchem.BondType.UNSPECIFIED, 
+    Chem.rdchem.BondType.SINGLE, 
+    Chem.rdchem.BondType.DOUBLE, 
+    Chem.rdchem.BondType.TRIPLE,
+    Chem.rdchem.BondType.AROMATIC, 
+    None
+] 
 
 DEGREE_CHOICE: List[int] = [0, 1, 2, 3, 4]
 
