@@ -7,12 +7,13 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
-from torch_geometric.nn import MessagePassing, radius_graph
+from torch_geometric.nn import MessagePassing, radius_graph, MLP
 from torch_scatter import scatter_mean
 
 from shell.utils.decorator import register_init_params
 from shell.model.base import VectorField
 from shell.model.submodule import DenseLayer
+from shell.data import Mol
 
 s_V = Tuple[torch.Tensor, torch.Tensor]
 
@@ -389,18 +390,20 @@ class GVPVectorField(VectorField):
             normalization_factor=normalization_factor,
         )
         self.context_node_nf = context_node_nf
-        self.shell_embedding = nn.Embedding(num_shells, hidden_nf)
+        # self.shell_embedding = nn.Embedding(num_shells, hidden_nf)
+        self.r_embedding_out = DenseLayer(hidden_nf, 1)
     
     def forward(
-        self, 
+        self,
+        mol: Mol, 
         t: torch.Tensor, 
-        x: torch.Tensor, 
-        h: torch.Tensor,
-        focus_shell_id: torch.Tensor,
-        edge_index: torch.Tensor = None,
+        # x: torch.Tensor, 
+        # h: torch.Tensor,
+        # focus_shell_id: torch.Tensor,
+        # edge_index: torch.Tensor = None,
         atom_mask: torch.Tensor = None,
-        context: torch.Tensor = None,
-        batch: torch.Tensor = None,
+        # context: torch.Tensor = None,
+        # batch: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of the EGNNDenoiser model.
         Args:
@@ -413,21 +416,30 @@ class GVPVectorField(VectorField):
             context: [batch_size, context_node_nf]
             batch: [n_nodes]
         """
+        batch = mol.batch
+        pos = mol.pos
+        h = mol.x
+        
+        if atom_mask is None:
+            atom_mask = torch.ones((h.shape[0], 1), device=h.device)
+        
         # 1. Concatenate time and context (if provided) to h
         if batch is None:
-            batch = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
+            batch = torch.zeros(pos.shape[0], dtype=torch.long, device=pos.device)
         h = torch.cat([h, t[batch]], dim=1)
-        if edge_index is None:
-            edge_index = radius_graph(x, r=1e+50, batch=batch, max_num_neighbors=100)
+        # if edge_index is None:
+        edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100)
 
         # 2. Forward pass through GVP
         h = self.h_embedding(h)
-        shell_emb = self.shell_embedding(focus_shell_id.squeeze(1))
-        h = h + shell_emb[batch]
-        if context is not None:
-            h = torch.cat([h, context], dim=1)
-        h_final, vel = self.gvp(h, x, edge_index)
+        # shell_emb = self.shell_embedding(focus_shell_id.squeeze(1))
+        # h = h + shell_emb[batch]
+        # if context is not None:
+            # h = torch.cat([h, context], dim=1)
+        h_final, vel = self.gvp(h, pos, edge_index)
+        r_final = self.r_embedding_out(h_final)
         h_final = self.h_embedding_out(h_final)
         vel = vel.squeeze(1)
+        v = vel / (vel.norm(dim=-1, keepdim=True) + 1e-6)
 
-        return vel, h_final
+        return h_final, v, r_final

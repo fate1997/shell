@@ -16,10 +16,12 @@ from tqdm import tqdm
 
 from shell.analysis.mol_sample import MolSample, MolSampleList
 from shell.data import Mol, MolDataset, SphMol
+from shell.data.mol import RadiusTransform
 from shell.model import EGNNVectorField, GVPVectorField
 from shell.path import SphMolPath
 from shell.utils.for_training import LRScheduler
 from shell.utils.settings import QM9_SHELL_RADIUS
+from shell.path.solver import SphMolSolver
 
 
 class ShellFlow(pl.LightningModule):
@@ -48,7 +50,7 @@ class ShellFlow(pl.LightningModule):
         
         # Setup Loss Function
         self.loss_fn = {
-            'x': MixturePathGeneralizedKL(self.path.x_path),
+            'x': nn.CrossEntropyLoss(),
             'v': nn.MSELoss(),
             'r': nn.MSELoss()
         }
@@ -83,17 +85,17 @@ class ShellFlow(pl.LightningModule):
         batch_size = self.config['train']['batch_size']
         
         sphmol1 = SphMol.from_mol(mol)
-        sphmol0 = sphmol1.get_prior(num_atom_types)
+        sphmol0 = sphmol1.get_prior()
         
         t = torch.rand((batch_size, ), device=self.device)[mol.batch]
         sphmolt, dvdt, drdt = self.path.sample(sphmol0, sphmol1, t)
         molt = sphmolt.to_mol()
-        x_pred, dvdt_pred, drdt_pred = self.vf(molt, t)
-        
+        x_pred, dvdt_pred, drdt_pred = self.vf(molt, t.unsqueeze(-1))
+        dvdt_pred = self.manifold.proju(sphmolt.v, dvdt_pred)
         loss_dict = {
-            'x': self.loss_fn['x'](x_pred.argmax(-1), sphmol1.x.argmax(-1), sphmolt.x.argmax(-1), t),
+            'x': self.loss_fn['x'](x_pred, sphmol1.x.argmax(dim=1)),
             'v': self.loss_fn['v'](dvdt_pred, dvdt),
-            'r': self.loss_fn['r'](drdt_pred, drdt)
+            'r': self.loss_fn['r'](drdt_pred, drdt) / 3.0
         }
         
         self.log_dict(loss_dict, prog_bar=True, on_step=True, sync_dist=True, batch_size=batch_size)
@@ -136,4 +138,14 @@ class ShellFlow(pl.LightningModule):
         record_traj: bool = False,
         context: torch.Tensor = None,
     ) -> MolSampleList:
-        raise NotImplementedError
+        num_nodes = num_nodes.to(self.device)
+        num_atom_types = len(self.config['sample']['unique_atom_nums'])
+        sphmol0 = SphMol.from_prior(num_nodes, num_atom_types, self.device)
+        
+        solver = SphMolSolver(
+            vf=self.vf,
+            x_path=self.path.x_path,
+            unique_atom_nums=self.config['sample']['unique_atom_nums'],
+            n_steps=self.config['sample']['timesteps']
+        )
+        return solver.sample(sphmol0, return_traj=record_traj)

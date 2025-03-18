@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks import TQDMProgressBar
 from pytorch_lightning.loggers import WandbLogger
 
-from shell import ShellGen
+from shell import ShellFlow
 
 DEFAULT_CONFIG_PATH = pathlib.Path(__file__).parent.parent / 'config/default.yaml'
 DEFAULT_OUTDIR = '.shell_output/'
@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--processed-name', type=str, 
                         default=config['dataset']['processed_name'])
-    parser.add_argument('--model', type=str, default='gvp')
+    parser.add_argument('--model', type=str, default='egnn')
     parser.add_argument('--timesteps', type=int, default=1000)
     args = parser.parse_args()
     
@@ -67,7 +67,7 @@ def train(config: DictConfig):
     checkpoint_callback = pl.callbacks.ModelCheckpoint(**checkpoint_config)
     
     # 4. Setup model
-    model = ShellGen(config)
+    model = ShellFlow(config)
     OmegaConf.save(config, os.path.join(outdir, 'config.yaml'))
     
     # 5. Training

@@ -2,7 +2,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import radius_graph
+from torch_geometric.nn import radius_graph, MLP
 
 from shell.model.base import VectorField
 from shell.model.submodule import (DenseLayer, SinEmbedding, coord2diff,
@@ -299,11 +299,14 @@ class EGNNVectorField(VectorField):
             norm_constant=norm_constant,
             inv_sublayers=inv_sublayers, 
             sin_embedding=sin_embedding,
-            normal_factor=normal_factor
+            normal_factor=normal_factor,
+            out_node_nf=hidden_nf
         )
         self.in_node_nf = in_node_nf
         self.context_node_nf = context_node_nf
         # self.shell_embedding = nn.Embedding(num_shells, in_node_nf - 1)
+        self.radius_pred = MLP([hidden_nf, hidden_nf, 1], act_fn=act_fn)
+        self.x_pred = MLP([hidden_nf, hidden_nf, in_node_nf - 1], act_fn=act_fn)
     
     def forward(
         self,
@@ -350,9 +353,11 @@ class EGNNVectorField(VectorField):
         # 3. Post-process outputs
         # if context is not None:
         #     h_final = h_final[:, :-self.context_node_nf]
-        h_final = h_final[:, :-1]
-        # pos_final = pos_final - pos
-        r = pos_final.norm(dim=-1, keepdim=True)
-        v = pos_final / (r + 1e-12)
+        # h_final = h_final[:, :-1]
+        x = self.x_pred(h_final)
+        r = self.radius_pred(h_final)
         
-        return h_final, v, r
+        pos_final = pos_final - pos
+        v = pos_final / (pos_final.norm(dim=-1, keepdim=True) + 1e-12)
+        
+        return x, v, r

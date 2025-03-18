@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 from torch_geometric.data import Data
 from dataclasses import dataclass
+import torch.nn.functional as F
 
 from shell.utils.settings import MID_RADIUS
 
@@ -94,6 +95,9 @@ class RadiusTransform:
     
     def inverse(self, r: torch.Tensor) -> torch.Tensor:
         return self.mid_radius * torch.exp(r / self.scale)
+    
+    def deriv_coef(self, r_real: torch.Tensor) -> torch.Tensor:
+        return self.scale / r_real
 
 
 @dataclass
@@ -105,7 +109,9 @@ class SphMol:
     
     def __post_init__(self):
         assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
-        assert self.v.norm(dim=-1).allclose(torch.ones_like(self.v[:, 0]))
+        v_norm = self.v.norm(dim=-1)
+        if not v_norm.allclose(torch.ones_like(v_norm)):
+            self.v = self.v / v_norm.unsqueeze(-1)
 
     @classmethod
     def from_cartesian(
@@ -124,6 +130,23 @@ class SphMol:
     def from_mol(cls, mol: Mol, mid_radius: float = MID_RADIUS) -> 'SphMol':
         return cls.from_cartesian(mol.x, mol.pos, mol.batch, mid_radius)
     
+    @classmethod
+    def from_prior(
+        cls, 
+        num_nodes: torch.Tensor, 
+        num_atom_types: int,
+        device: str='cuda'
+    ) -> 'SphMol':
+        total_nodes = num_nodes.sum()
+        x = torch.randint(num_atom_types, (total_nodes, ), device=device)
+        x = F.one_hot(x, num_classes=num_atom_types).float()
+        v = torch.randn(total_nodes, 3, device=device)
+        v = v / v.norm(dim=-1, keepdim=True)
+        r = torch.randn(total_nodes, 1, device=device)
+        b = torch.repeat_interleave(torch.arange(len(num_nodes), device=device), num_nodes)
+        return cls(x, v, r, b)
+
+    
     def get_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
         r = RadiusTransform(mid_radius).inverse(self.r)
         pos = self.v * r
@@ -141,3 +164,6 @@ class SphMol:
         v0 = v0 / v0.norm(dim=-1, keepdim=True)
         r0 = torch.randn_like(self.r)
         return SphMol(x0, v0, r0, self.b)
+    
+    def __len__(self):
+        return self.x.shape[0]

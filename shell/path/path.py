@@ -31,7 +31,7 @@ class SphMolPath:
         self.v_path = GeodesicProbPath(get_scheduler(v_scheduler), Sphere())
         self.r_path = AffineProbPath(get_scheduler(r_scheduler))
         
-    def sample(
+    def  sample(
         self,
         sphmol0: SphMol,
         sphmol1: SphMol,
