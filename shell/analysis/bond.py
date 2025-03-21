@@ -7,7 +7,7 @@ from openbabel import openbabel
 from rdkit import Chem
 from scipy.sparse import coo_matrix
 
-from shell.data.writer import get_xyz_str
+from shell.utils.writer import get_xyz_str
 from shell.utils.constants import (DOUBLE_BOND_DISTANCE, SINGLE_BOND_DISTANCE,
                                    TRIPLE_BOND_DISTANCE)
 

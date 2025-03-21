@@ -3,7 +3,7 @@ from typing import Tuple
 import py3Dmol
 import torch
 
-from shell.data.writer import get_xyz_str
+from shell.utils.writer import get_xyz_str
 from shell.utils.settings import COLOR_CONTRAST
 
 

@@ -45,15 +45,16 @@ dataset:
   processed_name: 'qm9.pt'
   force_reload: false
   add_xmask: true
+  processed_path: 'dataset/tmqm/all_woH_restricted'
 
 gvp:
-  in_node_nf: 6
+  in_node_nf: 17
   hidden_nf: 256
   n_layers: 6
   attention: true
 
 egnn:
-  in_node_nf: 6
+  in_node_nf: 17
   hidden_nf: 256
   n_layers: 6
   attention: true

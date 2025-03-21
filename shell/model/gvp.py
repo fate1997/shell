@@ -13,7 +13,7 @@ from torch_scatter import scatter_mean
 from shell.utils.decorator import register_init_params
 from shell.model.base import VectorField
 from shell.model.submodule import DenseLayer
-from shell.data import Mol
+from shell.data import TMC
 
 s_V = Tuple[torch.Tensor, torch.Tensor]
 
@@ -395,7 +395,7 @@ class GVPVectorField(VectorField):
     
     def forward(
         self,
-        mol: Mol, 
+        mol: TMC, 
         t: torch.Tensor, 
         # x: torch.Tensor, 
         # h: torch.Tensor,
@@ -420,6 +420,7 @@ class GVPVectorField(VectorField):
         pos = mol.pos
         h = mol.x
         
+        atom_mask = getattr(mol, 'ligand_mask', None)
         if atom_mask is None:
             atom_mask = torch.ones((h.shape[0], 1), device=h.device)
         

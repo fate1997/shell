@@ -7,7 +7,7 @@ import torch
 from rdkit import Chem
 
 from shell.analysis.bond import DistanceBondBuilder, OBBondBuilder
-from shell.data.writer import get_sdf_str, get_xyz_str
+from shell.utils.writer import get_sdf_str, get_xyz_str
 from shell.utils.visualizer import visualize_mol, visualize_traj
 
 
@@ -32,7 +32,7 @@ class MolSample:
         if self.pos_traj is not None and self.atom_traj is not None:
             assert len(self.pos_traj) == len(self.atom_traj)
         assert self.pos.shape[0] == self.atom_num.shape[0]
-        self.build_bond()
+        # self.build_bond()
     
     def __len__(self):
         return self.pos.shape[0]

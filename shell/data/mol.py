@@ -1,4 +1,3 @@
-import os
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -12,11 +11,11 @@ from torch_geometric.data import Data
 from torch_geometric.utils import subgraph
 
 from shell.analysis.bond import OBBondBuilder
-from shell.data.writer import get_sdf_str, get_xyz_str
+from shell.data.transform import AtomNumTransform, GeometryTransform
 from shell.utils.constants import BOND_ORDER_MAP
-from shell.utils.geometry import remove_partial_mean_with_mask
 from shell.utils.settings import MID_RADIUS
 from shell.utils.visualizer import visualize_mol
+from shell.utils.writer import get_sdf_str, get_xyz_str
 
 
 class TMC(Data):
@@ -33,6 +32,8 @@ class TMC(Data):
         ligand_group: Optional[torch.Tensor] = None,
         ligand_mask: Optional[torch.Tensor] = None,
         atom_num: Optional[torch.Tensor] = None,
+        v: Optional[torch.Tensor] = None,
+        r: Optional[torch.Tensor] = None,
         **kwargs
     ):
         super(TMC, self).__init__(x, edge_index, edge_attr, y, pos, **kwargs)
@@ -45,9 +46,11 @@ class TMC(Data):
         self.ligand_group = ligand_group
         self.ligand_mask = ligand_mask
         self.atom_num = atom_num
+        self.v = v
+        self.r = r
     
     @classmethod
-    def from_metal(
+    def from_prior(
         cls, 
         metal: int, 
         num_nodes: int,
@@ -55,48 +58,55 @@ class TMC(Data):
         add_batch: bool=False,
         y: Optional[torch.Tensor]=None
     ) -> 'TMC':
-        x = torch.zeros(
-            size=(num_nodes, unique_atom_nums.size(0)), 
-            dtype=torch.float
-        )
+        # Generate random atom types (excluding metal)
+        num_atom_types = len(unique_atom_nums)
+        x = torch.randint(num_atom_types, (num_nodes, ))
+        x = AtomNumTransform(unique_atom_nums).to_onehot(x)
         metal_idx = torch.where(unique_atom_nums == metal)[0]
+        x[0] = 0.0
         x[0, metal_idx] = 1.0
-        pos = torch.zeros(size=(num_nodes, 3), dtype=torch.float)
-        z = torch.zeros(size=(num_nodes,), dtype=torch.long)
-        z[0] = metal
+        
+        # Generate random positions
+        v = torch.randn(num_nodes, 3)
+        v = v - v[0]
+        v[1:] = v[1:] / v[1:].norm(dim=-1, keepdim=True)
+        r = torch.randn(num_nodes, 1)
+        pos = GeometryTransform().to_cartes(v, r)
         ligand_mask = torch.ones(size=(num_nodes, 1), dtype=torch.float)
         ligand_mask[0] = 0.0
         if add_batch:
             batch = torch.zeros(num_nodes, dtype=torch.long)
         else:
             batch = None
-        data = cls(x=x, pos=pos, z=z, ligand_mask=ligand_mask, y=y)
+        data = cls(x=x, pos=pos, ligand_mask=ligand_mask, y=y)
         data.batch = batch
+        data.v = v
+        data.r = r
         return data
 
-    def write(self, path: str=None, fmt: str=None) -> str:
-        if path is not None and fmt is None:
-            fmt = path.split('.')[-1]
-        if fmt == 'sdf':
-            if self.edge_index is None:
-                edge_index, orders = OBBondBuilder()(self.atom_num, self.pos)
-                self.edge_index = edge_index
-                self.edge_attr = orders
-            content = get_sdf_str(
-                self.atom_num, 
-                self.pos, 
-                self.edge_index, 
-                self.edge_attr
-            )
-        elif fmt == 'xyz':
-            content = get_xyz_str(self.atom_num, self.pos)
-        else:
-            raise ValueError(f'Unsupported file extension: {fmt}')
+    def build_prior(
+        self, 
+        unique_atom_nums: torch.Tensor,
+        unchanged_vars: List[str] = None
+    ) -> 'TMC':
+        num_nodes = self.num_nodes
+        prior = TMC.from_prior(self.z[0], num_nodes, unique_atom_nums, y=self.y)
+        prior.batch = self.batch
+        prior = prior.to(self.x.device)
         
-        if path is not None:
-            with open(path, 'w') as f:
-                f.write(content)
-        return content
+        if unchanged_vars is not None:
+            for var in unchanged_vars:
+                setattr(prior, var, getattr(self, var))
+                if var in ['v', 'r']:
+                    pos = GeometryTransform().to_cartes(prior.v, prior.r)
+                    prior.pos = pos
+        return prior
+    
+    def add_sphere(self):
+        if getattr(self, 'v', None) is None:
+            self.v, self.r = GeometryTransform().to_sphere(self.pos)
+            self.v = self.v.to(self.pos.device)
+            self.r = self.r.to(self.pos.device)
     
     def remove_hydrogen(self) -> 'TMC':
         notH_mask = self.z != 1
@@ -123,6 +133,12 @@ class TMC(Data):
             atom_num = self.atom_num[notH_mask]
         else:
             atom_num = None
+        if getattr(self, 'v', None) is not None:
+            v = self.v[notH_mask]
+            r = self.r[notH_mask]
+        else:
+            v, r = None, None
+        
         desc = getattr(self, 'desc', None)
         name = getattr(self, 'name', None)
         return TMC(
@@ -136,7 +152,9 @@ class TMC(Data):
             y=self.y, 
             ligand_group=ligand_group, 
             ligand_mask=ligand_mask,
-            atom_num=atom_num
+            atom_num=atom_num,
+            v=v,
+            r=r
         )
     
     def to_mol3d(self) -> mol3D:
@@ -211,39 +229,6 @@ class TMC(Data):
             conf.SetAtomPosition(i, Point3D(x,y,z))
         mol.AddConformer(conf)
         return mol
-
-    def reform(self, ligand_size: int, add_batch: bool=True) -> 'TMC':
-        new_data = {}
-        for attr in self.alive_attrs:
-            if attr == 'y':
-                new_data[attr] = getattr(self, attr)
-                continue
-            value = getattr(self, attr)
-            if not isinstance(value, torch.Tensor):
-                continue
-            context_info = value[(self.ligand_mask == 0.0).squeeze(-1)]
-        
-            if attr in ['ligand_mask', 'z', 'atom_num']:
-                ligand_info = torch.ones(
-                    size=(ligand_size,), 
-                    dtype=value.dtype, 
-                    device=value.device
-                )
-                if attr == 'ligand_mask':
-                    ligand_info = ligand_info.unsqueeze(-1)
-            elif attr in ['x', 'pos', 'ligand_group']:
-                ligand_info = torch.zeros(
-                    size=(ligand_size, value.size(1)), 
-                    dtype=value.dtype, 
-                    device=value.device
-                )
-            new_data[attr] = torch.cat([context_info, ligand_info], dim=0)
-        data = TMC(**new_data)
-        if add_batch:
-            data.batch = torch.zeros(data.num_nodes, dtype=torch.long)
-        
-        data.pos = data.pos - data.pos[0]
-        return data
     
     def update_atom_num(
         self, 
@@ -279,7 +264,9 @@ class TMC(Data):
             'ligand_group', 
             'metal_idx', 
             'ligand_mask',
-            'atom_num'
+            'atom_num',
+            'v',
+            'r'
         ]
         for attr in all_attr:
             if getattr(self, attr, None) is not None:
@@ -317,72 +304,83 @@ class RadiusTransform:
         return self.scale / r_real
 
 
-@dataclass
-class SphTMC:
-    x: torch.Tensor
-    v: torch.Tensor
-    r: torch.Tensor
-    b: torch.Tensor
+# @dataclass
+# class SphTMC:
+#     x: torch.Tensor
+#     v: torch.Tensor
+#     r: torch.Tensor
+#     b: torch.Tensor
+#     mask: Optional[torch.Tensor] = None
     
-    def __post_init__(self):
-        assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
-        v_norm = self.v.norm(dim=-1)
-        if not v_norm.allclose(torch.ones_like(v_norm)):
-            self.v = self.v / v_norm.unsqueeze(-1)
+#     def __post_init__(self):
+#         assert self.x.shape[0] == self.v.shape[0] == self.r.shape[0]
+#         if self.mask is None:
+#             mask = torch.ones_like(self.r)
+#             mask[0] = 0.0
+#             self.mask = mask
 
-    @classmethod
-    def from_cartesian(
-        cls,
-        x: torch.Tensor,
-        pos: torch.Tensor,
-        batch: torch.Tensor,
-        mid_radius: float = MID_RADIUS
-    ) -> 'SphTMC':
-        rel_pos = pos - pos[0]
-        r = rel_pos.norm(dim=-1, keepdim=True)
-        v = rel_pos / r
-        r = RadiusTransform(mid_radius).forward(r)
-        return cls(x, v, r, batch)
+#     @classmethod
+#     def from_cartesian(
+#         cls,
+#         x: torch.Tensor,
+#         pos: torch.Tensor,
+#         batch: torch.Tensor,
+#         mid_radius: float = MID_RADIUS,
+#         mask: Optional[torch.Tensor] = None
+#     ) -> 'SphTMC':
+#         rel_pos = pos - pos[0]
+#         r = rel_pos.norm(dim=-1, keepdim=True)
+#         v = rel_pos[1:] / r[1:]
+#         v = torch.cat([torch.zeros(1, 3, device=pos.device), v], dim=0)
+#         r[1:] = RadiusTransform(mid_radius).forward(r[1:])
+#         return cls(x, v, r, batch, mask)
 
-    @classmethod
-    def from_tmc(cls, tmc: TMC, mid_radius: float = MID_RADIUS) -> 'SphTMC':
-        return cls.from_cartesian(tmc.x, tmc.pos, tmc.batch, mid_radius)
+#     @classmethod
+#     def from_tmc(cls, tmc: TMC, mid_radius: float = MID_RADIUS) -> 'SphTMC':
+#         mask = tmc.ligand_mask
+#         return cls.from_cartesian(tmc.x.float(), tmc.pos, tmc.batch, mid_radius, mask)
     
-    @classmethod
-    def from_prior(
-        cls, 
-        num_nodes: torch.Tensor, 
-        num_atom_types: int,
-        device: str='cuda'
-    ) -> 'SphTMC':
-        total_nodes = num_nodes.sum()
-        x = torch.randint(num_atom_types, (total_nodes, ), device=device)
-        x = F.one_hot(x, num_classes=num_atom_types).float()
-        v = torch.randn(total_nodes, 3, device=device)
-        v = v / v.norm(dim=-1, keepdim=True)
-        r = torch.randn(total_nodes, 1, device=device)
-        b = torch.repeat_interleave(torch.arange(len(num_nodes), device=device), num_nodes)
-        return cls(x, v, r, b)
-
+#     @classmethod
+#     def from_prior(
+#         cls, 
+#         num_nodes: torch.Tensor, 
+#         num_atom_types: int,
+#         device: str='cuda',
+#         mask: Optional[torch.Tensor] = None
+#     ) -> 'SphTMC':
+#         total_nodes = num_nodes.sum()
+#         x = torch.randint(num_atom_types, (total_nodes, ), device=device)
+#         x = F.one_hot(x, num_classes=num_atom_types).float()
+#         v = torch.randn(total_nodes, 3, device=device)
+#         v = v - v[0]
+#         v[1:] = v[1:] / v[1:].norm(dim=-1, keepdim=True)
+#         r = torch.randn(total_nodes, 1, device=device)
+#         b = torch.repeat_interleave(torch.arange(len(num_nodes), device=device), num_nodes)
+#         return cls(x, v, r, b, mask)
     
-    def get_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
-        r = RadiusTransform(mid_radius).inverse(self.r)
-        pos = self.v * r
-        return pos
+#     def get_cartesian(self, mid_radius: float = MID_RADIUS) -> torch.Tensor:
+#         r = RadiusTransform(mid_radius).inverse(self.r)
+#         pos = self.v * r
+#         return pos
     
-    def to_tmc(self, mid_radius: float = MID_RADIUS):
-        r = RadiusTransform(mid_radius).inverse(self.r)
-        pos = self.v * r
-        return TMC(x=self.x, pos=pos, batch=self.b)
+#     def to_tmc(self, mid_radius: float = MID_RADIUS):
+#         r = RadiusTransform(mid_radius).inverse(self.r)
+#         pos = self.v * r
+#         return TMC(x=self.x, pos=pos, batch=self.b, ligand_mask=self.mask)
     
-    def get_prior(self) -> 'SphTMC':
-        num_atom_types = self.x.shape[1]
-        x0 = torch.randint_like(self.x, high=num_atom_types)
-        v0 = torch.randn_like(self.v)
-        v0 = v0 - v0[0]
-        v0 = v0 / v0.norm(dim=-1, keepdim=True)
-        r0 = torch.randn_like(self.r)
-        return SphTMC(x0, v0, r0, self.b)
+#     def get_prior(self) -> 'SphTMC':
+#         num_nodes = torch.LongTensor([self.x.shape[0]]).to(self.x.device)
+#         num_atom_types = self.x.shape[1]
+#         return SphTMC.from_prior(
+#             num_nodes, num_atom_types, device=self.x.device, mask=self.mask
+#         )
     
-    def __len__(self):
-        return self.x.shape[0]
+#     def merge_unchanged(self, sphtmc: 'SphTMC'):
+#         remain_mask = (1 - sphtmc.mask).bool().squeeze(-1)
+#         self.x[remain_mask] = sphtmc.x[remain_mask]
+#         self.v[remain_mask] = sphtmc.v[remain_mask]
+#         self.r[remain_mask] = sphtmc.r[remain_mask]
+#         return sphtmc
+    
+#     def __len__(self):
+#         return self.x.shape[0]

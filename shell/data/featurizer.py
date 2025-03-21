@@ -161,7 +161,7 @@ class ShellIdFeaturizer(Featurizer):
     ) -> Dict[str, torch.Tensor]:
         pos = rdmol.GetConformer().GetPositions()
         pos = torch.from_numpy(pos).float()
-        pos -= pos.mean(dim=0)
+        pos = pos - pos[0]
         distance = torch.norm(pos, dim=1)
         shell_id = assign_shell_id(distance, torch.tensor(QM9_SHELL_RADIUS))
         return {'shell_id': shell_id, 'radius': distance}

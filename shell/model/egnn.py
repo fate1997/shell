@@ -8,7 +8,7 @@ from shell.model.base import VectorField
 from shell.model.submodule import (DenseLayer, SinEmbedding, coord2diff,
                                       unsorted_segment_sum)
 from shell.utils.decorator import register_init_params
-from shell.data import Mol
+from shell.data import TMC
 
 
 class GCL(nn.Module):
@@ -310,14 +310,13 @@ class EGNNVectorField(VectorField):
     
     def forward(
         self,
-        mol: Mol, 
+        x: torch.Tensor,
+        pos: torch.Tensor,
         t: torch.Tensor, 
-        # x: torch.Tensor, 
-        # h: torch.Tensor,
         # focus_shell_id: torch.Tensor,
         atom_mask: torch.Tensor = None,
         # context: torch.Tensor = None,
-        # batch: torch.Tensor = None,
+        batch: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of the EGNNDenoiser model.
         Args:
@@ -326,14 +325,11 @@ class EGNNVectorField(VectorField):
             h: Features. [n_nodes, h_dims]
             focus_shell_id: Focus shell id. [batch_size, 1]
             edge_index: [2, n_edges]
-            atom_mask: [n_nodes]
+            atom_mask: [n_nodes, 1]
             context: [batch_size, context_node_nf]
             batch: [n_nodes]
         """
-        batch = mol.batch
-        pos = mol.pos
-        h = mol.x
-        
+        h = x
         if atom_mask is None:
             atom_mask = torch.ones((h.shape[0], 1), device=h.device)
         
@@ -358,6 +354,7 @@ class EGNNVectorField(VectorField):
         r = self.radius_pred(h_final)
         
         pos_final = pos_final - pos
+        # may not be necessary
         v = pos_final / (pos_final.norm(dim=-1, keepdim=True) + 1e-12)
         
         return x, v, r

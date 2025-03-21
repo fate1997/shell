@@ -7,8 +7,9 @@ from flow_matching.utils.manifolds import Sphere
 from tqdm import tqdm
 
 from shell.analysis.mol_sample import MolSample, MolSampleList
-from shell.data import Mol, SphMol
+from shell.data import TMC
 from shell.model import VectorField
+from shell.data.transform import GeometryTransform, AtomNumTransform
 
 
 class SphMolSolver(Solver):
@@ -29,33 +30,49 @@ class SphMolSolver(Solver):
     @torch.no_grad()
     def sample(
         self,
-        sphmol0: SphMol,
+        sphmol0: TMC,
         return_traj: bool = False,
+        unchanged_vars: list = None,
     ) -> MolSampleList:
         vocab_size = sphmol0.x.shape[1]
-        
+        mask = (1 - sphmol0.ligand_mask).bool().squeeze(-1)
         sphmolt = sphmol0
         t = torch.linspace(0, 1, self.n_steps, device=sphmolt.x.device)
-        x_traj = [self._x2atom_num(sphmol0.to_mol().x).detach().cpu()]
-        pos_traj = [sphmol0.to_mol().pos.detach().cpu()]
+        x_traj = [self._x2atom_num(sphmol0.x).detach().cpu()]
+        pos_traj = [sphmol0.pos.detach().cpu()]
+        xt = sphmolt.x
+        vt, rt = GeometryTransform().to_sphere(sphmolt.pos)
         for t0, t1 in tqdm(zip(t[:-1], t[1:]), desc='Sampling', total=self.n_steps - 1):
             dt = t1 - t0
-            xt, dvdt, drdt = self.vf(sphmolt.to_mol(), t0.repeat(len(sphmol0)).unsqueeze(1))
+            xt_pred, dvdt, drdt = self.vf(
+                x=xt, 
+                pos=GeometryTransform().to_cartes(vt, rt),
+                t=t.unsqueeze(-1),
+                atom_mask=sphmol0.ligand_mask,
+                batch=sphmol0.batch
+            )
             last_step = t1 == t[-1]
-            xt = self._step_x(sphmolt.x.argmax(-1), xt.softmax(-1), t0, dt, last_step, vocab_size)
-            vt = self._step_v(dt, sphmolt.v, dvdt)
-            rt = self._step_r(dt, sphmolt.r, drdt)
-            xt = F.one_hot(xt, num_classes=vocab_size).float()
-            sphmolt = SphMol(xt, vt, rt, sphmolt.b)
+            if unchanged_vars is None or 'x' not in unchanged_vars:
+                xt_pred = self._step_x(xt_pred.argmax(-1), xt_pred.softmax(-1), t0, dt, last_step, vocab_size)
+                xt_pred = F.one_hot(xt_pred, num_classes=vocab_size).float()
+                xt_pred[mask] = sphmol0.x.float()[mask]
+                xt = xt_pred
+            if unchanged_vars is None or 'v' not in unchanged_vars:
+                dvdt = Sphere().proju(vt, dvdt)
+                vt = self._step_v(dt, vt, dvdt)
+                vt[mask] = sphmol0.v[mask]
+            if unchanged_vars is None or 'r' not in unchanged_vars:
+                rt = self._step_r(dt, rt, drdt)
+                rt[mask] = sphmol0.r[mask]
             if return_traj and not last_step:
-                mol = sphmolt.to_mol()
-                x_traj.append(self._x2atom_num(mol.x).detach().cpu())
-                pos_traj.append(mol.pos.detach().cpu())
-        mol = sphmolt.to_mol()
+                x_traj.append(self._x2atom_num(xt).detach().cpu())
+                pos = GeometryTransform().to_cartes(vt, rt)
+                pos_traj.append(pos.detach().cpu())
+        pos = GeometryTransform().to_cartes(vt, rt)
         return MolSampleList.from_batch(
-            pos=mol.pos.detach().cpu(),
-            atom_num=self._x2atom_num(mol.x).detach().cpu(),
-            batch=mol.batch.detach().cpu(),
+            pos=pos.detach().cpu(),
+            atom_num=self._x2atom_num(xt).detach().cpu(),
+            batch=sphmol0.batch.detach().cpu(),
             pos_traj=pos_traj,
             atom_traj=x_traj,
         )
@@ -120,7 +137,7 @@ class SphMolSolver(Solver):
         return rt + drdt * dt
 
     def _x2atom_num(self, x: torch.Tensor) -> torch.Tensor:
-        unique_atom_nums = torch.LongTensor(self.unique_atom_nums)
+        unique_atom_nums = self.unique_atom_nums
         x = x.argmax(dim=-1).detach().cpu()
         atom_num = unique_atom_nums[x]
         return atom_num
