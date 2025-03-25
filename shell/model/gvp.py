@@ -14,6 +14,7 @@ from shell.utils.decorator import register_init_params
 from shell.model.base import VectorField
 from shell.model.submodule import DenseLayer
 from shell.data import TMC
+from shell.data.transform import GeometryTransform
 
 s_V = Tuple[torch.Tensor, torch.Tensor]
 
@@ -377,7 +378,7 @@ class GVPVectorField(VectorField):
         num_shells: int = 5
     ):
         super().__init__()
-        self.h_embedding = DenseLayer(in_node_nf, hidden_nf, activation='silu')
+        self.h_embedding = DenseLayer(in_node_nf+1, hidden_nf, activation='silu')
         self.h_embedding_out = DenseLayer(hidden_nf, in_node_nf-1)
         self.gvp = GVPNetwork(
             in_dims=(hidden_nf+context_node_nf, 0),
@@ -395,7 +396,8 @@ class GVPVectorField(VectorField):
     
     def forward(
         self,
-        mol: TMC, 
+        x: torch.Tensor,
+        pos: torch.Tensor,
         t: torch.Tensor, 
         # x: torch.Tensor, 
         # h: torch.Tensor,
@@ -403,7 +405,7 @@ class GVPVectorField(VectorField):
         # edge_index: torch.Tensor = None,
         atom_mask: torch.Tensor = None,
         # context: torch.Tensor = None,
-        # batch: torch.Tensor = None,
+        batch: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of the EGNNDenoiser model.
         Args:
@@ -416,18 +418,14 @@ class GVPVectorField(VectorField):
             context: [batch_size, context_node_nf]
             batch: [n_nodes]
         """
-        batch = mol.batch
-        pos = mol.pos
-        h = mol.x
-        
-        atom_mask = getattr(mol, 'ligand_mask', None)
         if atom_mask is None:
             atom_mask = torch.ones((h.shape[0], 1), device=h.device)
-        
+        v, r = GeometryTransform().to_sphere(pos)
+        pos = v
         # 1. Concatenate time and context (if provided) to h
         if batch is None:
             batch = torch.zeros(pos.shape[0], dtype=torch.long, device=pos.device)
-        h = torch.cat([h, t[batch]], dim=1)
+        h = torch.cat([x, r, t[batch]], dim=1)
         # if edge_index is None:
         edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100)
 
@@ -441,6 +439,6 @@ class GVPVectorField(VectorField):
         r_final = self.r_embedding_out(h_final)
         h_final = self.h_embedding_out(h_final)
         vel = vel.squeeze(1)
-        v = vel / (vel.norm(dim=-1, keepdim=True) + 1e-6)
+        # v = vel / (vel.norm(dim=-1, keepdim=True) + 1e-6)
 
-        return h_final, v, r_final
+        return h_final, vel, r_final

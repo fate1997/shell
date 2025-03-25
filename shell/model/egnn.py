@@ -9,7 +9,7 @@ from shell.model.submodule import (DenseLayer, SinEmbedding, coord2diff,
                                       unsorted_segment_sum)
 from shell.utils.decorator import register_init_params
 from shell.data import TMC
-
+from shell.data.transform import GeometryTransform
 
 class GCL(nn.Module):
     def __init__(
@@ -290,7 +290,7 @@ class EGNNVectorField(VectorField):
     ):
         super().__init__()
         self.egnn = EGNN(
-            in_node_nf=in_node_nf + context_node_nf, 
+            in_node_nf=in_node_nf + context_node_nf + 1, 
             hidden_nf=hidden_nf, 
             act_fn=act_fn,
             n_layers=n_layers, 
@@ -329,7 +329,9 @@ class EGNNVectorField(VectorField):
             context: [batch_size, context_node_nf]
             batch: [n_nodes]
         """
-        h = x
+        v, r = GeometryTransform().to_sphere(pos)
+        pos = v
+        h = torch.cat([x, r], dim=1)
         if atom_mask is None:
             atom_mask = torch.ones((h.shape[0], 1), device=h.device)
         
@@ -353,8 +355,8 @@ class EGNNVectorField(VectorField):
         x = self.x_pred(h_final)
         r = self.radius_pred(h_final)
         
-        pos_final = pos_final - pos
+        # pos_final = pos_final - pos
         # may not be necessary
-        v = pos_final / (pos_final.norm(dim=-1, keepdim=True) + 1e-12)
+        # v = pos_final / (pos_final.norm(dim=-1, keepdim=True) + 1e-12)
         
-        return x, v, r
+        return x, pos_final, r
