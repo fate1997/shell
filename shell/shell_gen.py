@@ -21,6 +21,7 @@ from shell.analysis.mol_sample import MolSample, MolSampleList
 from shell.data import TMC, TMCDataset
 from shell.data.mol import RadiusTransform
 from shell.model import EGNNVectorField, GVPVectorField
+from shell.model.equiformer_v2._model import EquiformerEncoder
 from shell.path import SphMolPath
 from shell.utils.for_training import LRScheduler
 from shell.utils.settings import QM9_SHELL_RADIUS
@@ -35,11 +36,17 @@ class ShellFlow(pl.LightningModule):
         super().__init__()
         self.config = OmegaConf.load(config) if isinstance(config, str) else config
 
+        self._get_loader('test')
         # Setup denoiser
         if self.config['train']['model'] == 'gvp':
             self.vf = GVPVectorField(**self.config['gvp'])
         elif self.config['train']['model'] == 'egnn':
             self.vf = EGNNVectorField(**self.config['egnn'])
+        elif self.config['train']['model'] == 'equiformer':
+            self.vf = EquiformerEncoder(
+                **self.config['equiformer'],
+                max_num_elements=len(self.config['sample']['unique_atom_nums'])
+            )
         else:
             raise ValueError(f"Unknown model: {self.config['train']['model']}")
         
@@ -57,7 +64,6 @@ class ShellFlow(pl.LightningModule):
             'v': nn.MSELoss(reduction='none'),
             'r': nn.MSELoss(reduction='none')
         }
-        self._get_loader('test')
     
     def _get_loader(self, split = 'train'):
         processed_path = self.config['dataset']['processed_path']
