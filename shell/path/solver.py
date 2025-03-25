@@ -123,10 +123,13 @@ class SphMolSolver(Solver):
         projx: bool = True,
         proju: bool = True,
     ) -> torch.Tensor:
+        vt[0] = 0.0
         dvdt = self.manifold.proju(vt, dvdt) if proju else dvdt
         projx_fn = lambda x: self.manifold.projx(x) if projx else x
         vt = vt + dvdt * dt
-        return projx_fn(vt)
+        vt = projx_fn(vt)
+        vt[0] = 0.0
+        return vt
     
     def _step_r(
         self,
