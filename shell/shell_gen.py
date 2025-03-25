@@ -120,6 +120,9 @@ class ShellFlow(pl.LightningModule):
             # 'r': self.loss_fn['r'](drdt_pred, sample_out['drdt']) / 5
         }
         for key, value in loss_dict.items():
+            if key == 'v':
+                value = value * mol.pos.norm(dim=-1, keepdim=True) * 10
+            
             value = scatter_mean(value * mol.ligand_mask, mol.batch, dim=0)
             loss_dict[key] = value.mean()
         
