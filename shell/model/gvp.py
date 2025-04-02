@@ -378,7 +378,7 @@ class GVPVectorField(VectorField):
         num_shells: int = 5
     ):
         super().__init__()
-        self.h_embedding = DenseLayer(in_node_nf+1, hidden_nf, activation='silu')
+        self.h_embedding = DenseLayer(in_node_nf, hidden_nf, activation='silu')
         self.h_embedding_out = DenseLayer(hidden_nf, in_node_nf-1)
         self.gvp = GVPNetwork(
             in_dims=(hidden_nf+context_node_nf, 0),
@@ -420,12 +420,11 @@ class GVPVectorField(VectorField):
         """
         if atom_mask is None:
             atom_mask = torch.ones((h.shape[0], 1), device=h.device)
-        v, r = GeometryTransform().to_sphere(pos)
-        pos = v
+
         # 1. Concatenate time and context (if provided) to h
         if batch is None:
             batch = torch.zeros(pos.shape[0], dtype=torch.long, device=pos.device)
-        h = torch.cat([x, r, t[batch]], dim=1)
+        h = torch.cat([x, t[batch]], dim=1)
         # if edge_index is None:
         edge_index = radius_graph(pos, r=1e+50, batch=batch, max_num_neighbors=100)
 
@@ -436,9 +435,8 @@ class GVPVectorField(VectorField):
         # if context is not None:
             # h = torch.cat([h, context], dim=1)
         h_final, vel = self.gvp(h, pos, edge_index)
-        r_final = self.r_embedding_out(h_final)
         h_final = self.h_embedding_out(h_final)
         vel = vel.squeeze(1)
         # v = vel / (vel.norm(dim=-1, keepdim=True) + 1e-6)
 
-        return h_final, vel, r_final
+        return h_final, vel

@@ -469,7 +469,7 @@ class EquiformerEncoder(nn.Module):
         v = self.v_block(x).embedding.narrow(1, 0, 1).squeeze(1)
         r = self.r_block(x).embedding.narrow(1, 0, 1).squeeze(1)
         x = self.x_block(x).embedding.narrow(1, 0, 1).squeeze(1)
-        return x, v, r
+        return x, v
 
     def generate_graph(
         self,

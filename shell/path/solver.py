@@ -41,12 +41,12 @@ class SphMolSolver(Solver):
         x_traj = [self._x2atom_num(sphmol0.x).detach().cpu()]
         pos_traj = [sphmol0.pos.detach().cpu()]
         xt = sphmolt.x
-        vt, rt = GeometryTransform().to_sphere(sphmolt.pos)
+        pt = sphmolt.pos
         for t0, t1 in tqdm(zip(t[:-1], t[1:]), desc='Sampling', total=self.n_steps - 1):
             dt = t1 - t0
-            xt_pred, dvdt, drdt = self.vf(
+            xt_pred, dpdt = self.vf(
                 x=xt, 
-                pos=GeometryTransform().to_cartes(vt, rt),
+                pos=pt,
                 t=t.unsqueeze(-1),
                 atom_mask=sphmol0.ligand_mask,
                 batch=sphmol0.batch
@@ -57,20 +57,16 @@ class SphMolSolver(Solver):
                 xt_pred = F.one_hot(xt_pred, num_classes=vocab_size).float()
                 xt_pred[mask] = sphmol0.x.float()[mask]
                 xt = xt_pred
-            if unchanged_vars is None or 'v' not in unchanged_vars:
-                dvdt = Sphere().proju(vt, dvdt)
-                vt = self._step_v(dt, vt, dvdt)
-                vt[mask] = sphmol0.v[mask]
-            if unchanged_vars is None or 'r' not in unchanged_vars:
-                rt = self._step_r(dt, rt, drdt)
-                rt[mask] = sphmol0.r[mask]
+            if unchanged_vars is None or 'p' not in unchanged_vars:
+                pt = self._step_p(dt, pt, dpdt)
+                pt[mask] = sphmol0.pos[mask]
+        
             if return_traj and not last_step:
                 x_traj.append(self._x2atom_num(xt).detach().cpu())
-                pos = GeometryTransform().to_cartes(vt, rt)
-                pos_traj.append(pos.detach().cpu())
-        pos = GeometryTransform().to_cartes(vt, rt)
+                pos_traj.append(pt.detach().cpu())
+
         return MolSampleList.from_batch(
-            pos=pos.detach().cpu(),
+            pos=pt.detach().cpu(),
             atom_num=self._x2atom_num(xt).detach().cpu(),
             batch=sphmol0.batch.detach().cpu(),
             pos_traj=pos_traj,
@@ -115,29 +111,16 @@ class SphMolSolver(Solver):
                 xt[mask_jump] = categorical(u[mask_jump].to(dtype=p_1t.dtype))
         return xt
     
-    def _step_v(
+    def _step_p(
         self,
         dt: torch.Tensor,
-        vt: torch.Tensor,
-        dvdt: torch.Tensor,
-        projx: bool = True,
-        proju: bool = True,
+        pt: torch.Tensor,
+        dpdt: torch.Tensor,
     ) -> torch.Tensor:
-        vt[0] = 0.0
-        dvdt = self.manifold.proju(vt, dvdt) if proju else dvdt
-        projx_fn = lambda x: self.manifold.projx(x) if projx else x
-        vt = vt + dvdt * dt
-        vt = projx_fn(vt)
-        vt[0] = 0.0
-        return vt
-    
-    def _step_r(
-        self,
-        dt: torch.Tensor,
-        rt: torch.Tensor,
-        drdt: torch.Tensor,
-    ) -> torch.Tensor:
-        return rt + drdt * dt
+        pt[0] = 0.0
+        pt = pt + dpdt * dt
+        pt[0] = 0.0
+        return pt
 
     def _x2atom_num(self, x: torch.Tensor) -> torch.Tensor:
         unique_atom_nums = self.unique_atom_nums

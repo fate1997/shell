@@ -29,8 +29,7 @@ lr_scheduler:
 
 path:
   x_scheduler: 'poly'
-  v_scheduler: 'ot'
-  r_scheduler: 'ot'
+  p_scheduler: 'ot'
 
 sample:
   unique_atom_nums: [1, 6, 7, 8, 9]

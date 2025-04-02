@@ -53,16 +53,14 @@ class ShellFlow(pl.LightningModule):
         # Setup path and manifold
         self.path = SphMolPath(
             x_scheduler=self.config['path']['x_scheduler'],
-            v_scheduler=self.config['path']['v_scheduler'],
-            r_scheduler=self.config['path']['r_scheduler']
+            p_scheduler=self.config['path']['p_scheduler']
         )
         self.manifold = Sphere()
         
         # Setup Loss Function
         self.loss_fn = {
-            'x': nn.CrossEntropyLoss(reduction='none'),
-            'v': nn.MSELoss(reduction='none'),
-            'r': nn.MSELoss(reduction='none')
+            'x': nn.CrossEntropyLoss(reduction='mean'),
+            'p': nn.MSELoss(reduction='mean'),
         }
     
     def _get_loader(self, split = 'train'):
@@ -100,34 +98,29 @@ class ShellFlow(pl.LightningModule):
         mask = (1 - mol.ligand_mask).bool().squeeze(-1)
         
         mol.add_sphere()
-        mol0 = mol.build_prior(unique_atom_nums, unchanged_vars=['x', 'r'])
+        mol0 = mol.build_prior(unique_atom_nums, unchanged_vars=['x'])
         
         t = torch.rand((batch_size, ), device=self.device)[mol.batch]
-        sample_out = self.path.sample(mol0, mol, t, unique_atom_nums, unchanged_vars=['x', 'r'])
-        x_pred, dvdt_pred, drdt_pred = self.vf(
+        sample_out = self.path.sample(mol0, mol, t, unique_atom_nums, unchanged_vars=['x'])
+        x_pred, dpdt_pred = self.vf(
             x=sample_out['xt'], 
-            pos=GeometryTransform().to_cartes(sample_out['vt'], sample_out['rt']),
+            pos=sample_out['pt'],
             t=t.unsqueeze(-1),
             atom_mask=mol.ligand_mask,
             batch=mol.batch
         )
-        dvdt_pred = self.manifold.proju(sample_out['vt'], dvdt_pred)
-        dvdt_pred[mask] = 0.0
-        drdt_pred[mask] = 0.0
+        dpdt_pred[mask] = 0.0
         loss_dict = {
             # 'x': self.loss_fn['x'](x_pred, mol.x.argmax(-1)),
-            'v': self.loss_fn['v'](dvdt_pred, sample_out['dvdt']),
+            'p': self.loss_fn['p'](dpdt_pred, sample_out['dpdt']),
             # 'r': self.loss_fn['r'](drdt_pred, sample_out['drdt']) / 5
         }
         for key, value in loss_dict.items():
-            if key == 'v':
-                value = value * mol.pos.norm(dim=-1, keepdim=True) * 10
-            
             value = scatter_mean(value * mol.ligand_mask, mol.batch, dim=0)
             loss_dict[key] = value.mean()
         
         self.log_dict(loss_dict, prog_bar=True, on_step=True, sync_dist=True, batch_size=batch_size)
-        loss = loss_dict['v']# + loss_dict['v'] + loss_dict['r']
+        loss = loss_dict['p']# + loss_dict['v'] + loss_dict['r']
         return loss
     
     def training_step(self, mol: TMC, batch_idx: int) -> torch.Tensor:
@@ -165,7 +158,7 @@ class ShellFlow(pl.LightningModule):
         data: TMC,
         record_traj: bool = False,
         context: torch.Tensor = None,
-        unchanged_vars=['v', 'r']
+        unchanged_vars=['x']
     ) -> List[TMC]:
         data = data.to(self.device)
         solver = SphMolSolver(
